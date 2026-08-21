@@ -1,0 +1,19 @@
+# Secrets & session data — NEVER commit
+config.json
+*.csv
+.state*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+
+# Analysis artifacts (large binaries)
+*.apk
+*.xapk
+*.dex
+smali_out/
+dex_out/

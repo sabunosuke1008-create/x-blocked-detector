@@ -1,0 +1,31 @@
+{
+  "cookies": {
+    "auth_token": "YOUR_AUTH_TOKEN",
+    "ct0": "YOUR_CSRF_TOKEN"
+  },
+  "me": {
+    "screen_name": "your_handle_without_at",
+    "user_id": ""
+  },
+  "limits": {
+    "max_following": 0,
+    "max_followers": 0,
+    "max_own_tweets": 100,
+    "max_likes": 100,
+    "max_bookmarks": 100,
+    "max_connect": 50,
+    "max_notifications": 50,
+    "max_followers_you_know": 0,
+    "max_tweet_threads": 10,
+    "max_favoriters": 0,
+    "max_retweeters": 0,
+    "use_search": false,
+    "search_queries": ["to:your_handle"]
+  },
+  "delay_seconds": 1.0,
+  "batch_size": 100,
+  "concurrency": 6,
+  "tid_mode": "auto",
+  "output_csv": "blocked_report.csv",
+  "state_file": ".state.json"
+}
