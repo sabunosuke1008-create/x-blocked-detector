@@ -25,14 +25,18 @@ def _ensure_browser() -> None:
 
 
 def generate_tid(path: str, method: str = "GET") -> Optional[str]:
+    return generate_tids([(path, method)]).get((path, method))
+
+
+def generate_tids(paths: list[tuple[str, str]]) -> dict[tuple[str, str], Optional[str]]:
     _ensure_browser()
     script = _TID_SCRIPT.read_text(encoding="utf-8")
     script = script.replace(
         "window.__TX_PATH__",
-        json.dumps(path),
+        json.dumps(paths[0][0]),
     ).replace(
         "window.__TX_METHOD__",
-        json.dumps(method),
+        json.dumps(paths[0][1]),
     )
     tmp = _TID_SCRIPT.parent / "pw_tid_tmp.js"
     tmp.write_text(script, encoding="utf-8")
@@ -44,9 +48,14 @@ def generate_tid(path: str, method: str = "GET") -> Optional[str]:
     tmp.unlink(missing_ok=True)
 
     m = _TID_PATH_RE.search(result.stdout)
+    out: dict[tuple[str, str], Optional[str]] = {}
     if m and len(m.group(1)) > 50:
-        return m.group(1)
-    return None
+        for p, meth in paths:
+            out[(p, meth)] = m.group(1)
+    else:
+        for p, meth in paths:
+            out[(p, meth)] = None
+    return out
 
 
 def close_browser() -> None:

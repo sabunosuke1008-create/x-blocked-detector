@@ -64,6 +64,8 @@ class RawClient:
     MOBILE_USER_OP_ID = "DuN4Qld4UROZ63wKFX8cfw"
     MOBILE_USER_OP_NAME = "GetUserByScreenNameQuery"
 
+    _tid_cache: dict[str, str] = {}
+
     def mobile_user(self, screen_name: str, use_tid: bool = True) -> CheckResult:
         path = f"/graphql/{self.MOBILE_USER_OP_ID}/{self.MOBILE_USER_OP_NAME}"
         params = {
@@ -75,13 +77,17 @@ class RawClient:
         }
         headers = dict(self.headers)
         if use_tid:
-            try:
-                from .tid_gen import generate_tid
-                tid = generate_tid(path, "GET")
-                if tid:
-                    headers["x-client-transaction-id"] = tid
-            except Exception:
-                pass
+            tid = self._tid_cache.get(path)
+            if not tid:
+                try:
+                    from .tid_gen import generate_tid
+                    tid = generate_tid(path, "GET")
+                    if tid:
+                        self._tid_cache[path] = tid
+                except Exception:
+                    pass
+            if tid:
+                headers["x-client-transaction-id"] = tid
         url = API_HOST + path
         for attempt in range(2):
             resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)

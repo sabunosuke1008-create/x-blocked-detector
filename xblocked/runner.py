@@ -79,8 +79,12 @@ def run_scan(
 
     ids = [c.user_id for c in seen.values() if c.user_id]
     by_res_id: dict[str, CheckResult] = {}
-    if ids:
+    if ids and not getattr(run_scan, "_batch_always_fails", False):
         results = batch_check(client, ids, cfg.batch_size)
+        error_count = sum(1 for r in results if r.status == STATUS_ERROR)
+        if len(results) > 0 and error_count == len(results):
+            run_scan._batch_always_fails = True
+            print("[runner] batch check always fails, skipping future calls", flush=True)
         print(f"[runner] batch check done: {len(results)} results  t=+{time.time()-_t0:.1f}s", flush=True)
         by_res_id = {r.user_id: r for r in results}
 

@@ -227,9 +227,20 @@ def collect_candidates(
             mine = _tweet_page(lambda cur, cnt: client.user_tweets(me_id, cursor=cur, count=cnt), cap("max_tweet_threads"), 0.0)
             thread_ids = [t.get("id_str") or t.get("rest_id") for t in mine]
             thread_ids = [x for x in thread_ids if x]
-            for tweet_id in thread_ids:
-                replies = _tweet_page(lambda cur, cnt: client.tweet_thread(tweet_id, cursor=cur, count=cnt), 50, 0.0, max_pages=3)
-                merge(seen, _tweet_candidates(replies, f"replies:{tweet_id[:8]}", me_id))
+
+            def fetch_thread(tid: str) -> list[Candidate]:
+                replies = _tweet_page(lambda cur, cnt: client.tweet_thread(tid, cursor=cur, count=cnt), 50, 0.0, max_pages=3)
+                return _tweet_candidates(replies, f"replies:{tid[:8]}", me_id)
+
+            with ThreadPoolExecutor(max_workers=min(len(thread_ids), 8)) as tp:
+                all_cands = []
+                futures = {tp.submit(fetch_thread, tid): tid for tid in thread_ids}
+                for fut in as_completed(futures):
+                    try:
+                        all_cands.extend(fut.result())
+                    except Exception:
+                        pass
+                merge(seen, all_cands)
             print(f"[collect][tweet_thr] {len(thread_ids)} threads in {time.time()-_s:.1f}s", flush=True)
         except Exception as exc:  # noqa: BLE001
             skipped.append(f"tweet_threads: {exc}")
@@ -247,12 +258,23 @@ def collect_candidates(
         except Exception as exc:  # noqa: BLE001
             skipped.append(f"my_tweets: {exc}")
 
+    fr_rt_tasks: list[tuple[str, Callable]] = []
     if cap("max_favoriters") > 0:
         for tweet_id in my_tweets:
-            run_user(f"favoriters:{tweet_id}", lambda cur, cnt: client.favoriters(tweet_id, cursor=cur, count=cnt), cap("max_favoriters"))
-
+            fr_rt_tasks.append((f"favoriters:{tweet_id[:8]}", lambda tid=tweet_id: run_user(f"favoriters:{tid[:8]}", lambda cur, cnt: client.favoriters(tid, cursor=cur, count=cnt), cap("max_favoriters"))))
     if cap("max_retweeters") > 0:
         for tweet_id in my_tweets:
-            run_user(f"retweeters:{tweet_id}", lambda cur, cnt: client.retweeters(tweet_id, cursor=cur, count=cnt), cap("max_retweeters"))
+            fr_rt_tasks.append((f"retweeters:{tweet_id[:8]}", lambda tid=tweet_id: run_user(f"retweeters:{tid[:8]}", lambda cur, cnt: client.retweeters(tid, cursor=cur, count=cnt), cap("max_retweeters"))))
+
+    if fr_rt_tasks:
+        _s = time.time()
+        with ThreadPoolExecutor(max_workers=min(len(fr_rt_tasks), 10)) as pool:
+            futures = {pool.submit(fn): name for name, fn in fr_rt_tasks}
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    skipped.append(f"{futures[fut]}: {exc}")
+        print(f"[collect][fav+rt] {len(fr_rt_tasks)} tasks in {time.time()-_s:.1f}s", flush=True)
 
     return seen, skipped
