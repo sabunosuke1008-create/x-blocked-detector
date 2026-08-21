@@ -73,7 +73,7 @@ python main.py --config config.json --mode self --tid off
 
 X の **Smart Block**(フォロー関係を維持したまま相手の投稿を非表示にする機能)は、通常のブロックと異なり**フォロワー/フォロー関係が切断されない**ため、従来の「フォロワー/フォロー一覧には被ブロック者が残らない」という前提が当てはまりません。
 
-APK 解析により以下を特定し、実装しました:
+APK 解析 + Playwright による動的解析により以下を特定し、実装しました:
 
 - Android アプリの GraphQL 操作 `GetUserByScreenNameQuery` の persisted query ID: `DuN4Qld4UROZ63wKFX8cfw`
 - このクエリの応答には Web 版に無い以下が含まれる:
@@ -82,7 +82,26 @@ APK 解析により以下を特定し、実装しました:
   - `relationship_perspectives.live_following` / `muted_by`
 - モデル側の対応: `com.x.models.Friendship` の `isSmartBlockingMe` / `isSmartBlockedByMe`
 
-判定結果の `status` は `SMART_BLOCKED_BY` として出力され、`blocked_by` とは区別されます。
+### x-client-transaction-id の生成
+
+Smart Block 検出用のモバイルクエリは `x-client-transaction-id` ヘッダーを必須とする場合があります。本ツールは **Playwright を併用**してこのヘッダーを自動生成します:
+
+1. Playwright で x.com を開く(要ログイン Cookie)
+2. webpack チャンク 59924(`ondemand.s.*.js`)を遅延ロード
+3. SVG アニメーションフレーム + `twitter-site-verification` キーから TID を生成
+4. 生成した TID を Python 側の API リクエストに付与
+
+Playwright が利用できない環境では TID 無しでフォールバックします(Web 版クエリ経由)。
+
+### 判定ステータス
+
+| ステータス | 意味 |
+| --- | --- |
+| `BLOCKED_BY` | 完全ブロックされている |
+| `SMART_BLOCKED_BY` | Smart Block されている |
+| `OK` | ブロックされていない |
+| `SUSPENDED` | 相手のアカウントが凍結中 |
+| `DEACTIVATED` | 相手が退会済み |
 
 ### フォロワー/フォロー収集の扱い
 

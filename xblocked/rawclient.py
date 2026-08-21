@@ -64,7 +64,8 @@ class RawClient:
     MOBILE_USER_OP_ID = "DuN4Qld4UROZ63wKFX8cfw"
     MOBILE_USER_OP_NAME = "GetUserByScreenNameQuery"
 
-    def mobile_user(self, screen_name: str) -> CheckResult:
+    def mobile_user(self, screen_name: str, use_tid: bool = True) -> CheckResult:
+        path = f"/graphql/{self.MOBILE_USER_OP_ID}/{self.MOBILE_USER_OP_NAME}"
         params = {
             "variables": json.dumps({
                 "screen_name": screen_name,
@@ -72,9 +73,18 @@ class RawClient:
                 "include_can_pay": False,
             })
         }
-        url = f"{API_HOST}/graphql/{self.MOBILE_USER_OP_ID}/{self.MOBILE_USER_OP_NAME}"
+        headers = dict(self.headers)
+        if use_tid:
+            try:
+                from .tid_gen import generate_tid
+                tid = generate_tid(path, "GET")
+                if tid:
+                    headers["x-client-transaction-id"] = tid
+            except Exception:
+                pass
+        url = API_HOST + path
         for attempt in range(2):
-            resp = requests.get(url, params=params, headers=self.headers, timeout=self.timeout)
+            resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)
             if resp.status_code == 429 and attempt < 1:
                 time.sleep(60)
                 continue
