@@ -142,3 +142,18 @@ def test_page_budget_unlimited():
     b = PageBudget()
     assert all(b.try_take() for _ in range(10))
     assert not b.exhausted
+
+
+def test_resolve_playwright_cli_override(monkeypatch):
+    import xblocked.tid_gen as tg
+    monkeypatch.setenv("XB_PLAYWRIGHT_CLI", "C:/custom/cli.cmd")
+    assert tg._resolve_playwright_argv() == ["C:/custom/cli.cmd"]
+
+
+def test_playwright_argv_none_when_no_cli(monkeypatch):
+    import xblocked.tid_gen as tg
+    monkeypatch.delenv("XB_PLAYWRIGHT_CLI", raising=False)
+    monkeypatch.setattr(tg.shutil, "which", lambda name: None)
+    assert tg._resolve_playwright_argv() is None
+    assert tg._resolve_playwright_argv() is None
+    assert tg.generate_tid("/graphql", "GET") is None

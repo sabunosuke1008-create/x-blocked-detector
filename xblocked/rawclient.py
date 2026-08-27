@@ -94,12 +94,15 @@ class RawClient:
 
     _shared_tid: Optional[str] = None
     _shared_tid_at: float = 0.0
+    _tid_broken: bool = False
     _TID_TTL = 90.0
 
     def _get_shared_tid(self) -> Optional[str]:
         now = time.time()
         if self._shared_tid and now - self._shared_tid_at < self._TID_TTL:
             return self._shared_tid
+        if self._tid_broken:
+            return None
         try:
             from .tid_gen import generate_tid
             tid = generate_tid("/graphql", "GET")
@@ -107,9 +110,10 @@ class RawClient:
                 self._shared_tid = tid
                 self._shared_tid_at = now
                 return tid
+            self._tid_broken = True
         except Exception:
-            pass
-        return self._shared_tid
+            self._tid_broken = True
+        return None
 
     def mobile_user(self, screen_name: str, use_tid: bool = True) -> CheckResult:
         path = f"/graphql/{self.MOBILE_USER_OP_ID}/{self.MOBILE_USER_OP_NAME}"

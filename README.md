@@ -81,6 +81,7 @@ python main.py --config config.json --mode scan
 | `delay_seconds` | ページ間スリープ(大きいほど安全) |
 | `concurrency` | 判定の並列数(既定12・最大16) |
 | `tid_mode` | `auto`(既定) / `off` |
+| 環境変数 `XB_PLAYWRIGHT_CLI` | Playwright CLI のパスを明示指定(通常は PATH から自動検出。未指定で見つからない場合は TID 生成をスキップし通常動作) |
 | `cache_ttl_hours` | 判定キャッシュのTTL(既定168、0で無効) |
 | `max_pages` / `time_budget_seconds` | 収集の横断予算(既定0=無制限) |
 
