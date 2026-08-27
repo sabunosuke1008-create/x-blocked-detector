@@ -41,6 +41,20 @@ def main() -> int:
         help="verdict cache TTL in hours; 0 disables caching (default from config, 168)",
     )
     parser.add_argument("--clear-cache", action="store_true", help="delete the state file before scanning")
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        metavar="N",
+        help="collection page budget across all sources (0=unlimited, default from config)",
+    )
+    parser.add_argument(
+        "--time-budget",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help="wall-clock cap on the collection phase (0=unlimited)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="validate config only, no network calls")
     args = parser.parse_args()
 
@@ -49,6 +63,10 @@ def main() -> int:
         cfg.tid_mode = args.tid
     if args.cache_ttl is not None:
         cfg.cache_ttl_hours = args.cache_ttl
+    if args.max_pages is not None:
+        cfg.max_pages = args.max_pages
+    if args.time_budget is not None:
+        cfg.time_budget_seconds = args.time_budget
     problems = cfg.validate()
     if problems:
         print("config problems:")
@@ -97,7 +115,28 @@ def main() -> int:
         Path(cfg.state_file).unlink(missing_ok=True)
         print(f"state cleared: {cfg.state_file}")
 
-    outcomes, skipped, me_id = run_scan(cfg, limit_override=args.limit, refresh_query_ids=args.refresh_ids)
+    def _alert(o) -> None:
+        from xblocked.model import STATUS_BLOCKED, STATUS_SMART_BLOCKED
+
+        if o.result.status in (STATUS_BLOCKED, STATUS_SMART_BLOCKED):
+            tag = o.result.status
+            cached = " (cached)" if o.cached else ""
+            print(f"  [!!] @{o.candidate.screen_name or '?'} {tag} sources={','.join(sorted(o.candidate.sources))}{cached}", flush=True)
+
+    last = {"n": 0}
+
+    def _tick(done: int, total: int) -> None:
+        if done - last["n"] >= 25 or done == total:
+            last["n"] = done
+            print(f"[runner] progress {done}/{total}", flush=True)
+
+    outcomes, skipped, me_id = run_scan(
+        cfg,
+        limit_override=args.limit,
+        refresh_query_ids=args.refresh_ids,
+        progress=_tick,
+        on_result=_alert,
+    )
 
     output = args.output or cfg.output_csv
     to_csv(outcomes, output)

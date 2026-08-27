@@ -118,3 +118,27 @@ def test_save_state_preserves_ts_for_cached_hits(tmp_path):
                  cached=False)
     save_state(p, [o3])
     assert load_state(p)["accounts"]["9"]["ts"] >= ts1
+
+
+def test_page_budget_count_limit():
+    from xblocked.budget import PageBudget
+    b = PageBudget(max_pages=3)
+    assert [b.try_take() for _ in range(5)] == [True, True, True, False, False]
+    assert b.exhausted and "page budget" in b.summary()
+
+
+def test_page_budget_time_limit():
+    import time as t
+    from xblocked.budget import PageBudget
+    b = PageBudget(seconds=0.05)
+    assert b.try_take() is True
+    t.sleep(0.08)
+    assert b.try_take() is False
+    assert b.stopped_by == "time budget"
+
+
+def test_page_budget_unlimited():
+    from xblocked.budget import PageBudget
+    b = PageBudget()
+    assert all(b.try_take() for _ in range(10))
+    assert not b.exhausted

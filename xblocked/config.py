@@ -30,6 +30,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "output_csv": "blocked_report.csv",
     "state_file": ".state.json",
     "cache_ttl_hours": 168,
+    "max_pages": 0,
+    "time_budget_seconds": 0,
 }
 
 
@@ -46,6 +48,8 @@ class Config:
     output_csv: str = "blocked_report.csv"
     state_file: str = ".state.json"
     cache_ttl_hours: int = 168
+    max_pages: int = 0
+    time_budget_seconds: float = 0.0
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
@@ -65,6 +69,8 @@ class Config:
             output_csv=str(merged.get("output_csv", "blocked_report.csv")),
             state_file=str(merged.get("state_file", ".state.json")),
             cache_ttl_hours=int(merged.get("cache_ttl_hours", 168)),
+            max_pages=int(merged.get("max_pages", 0)),
+            time_budget_seconds=float(merged.get("time_budget_seconds", 0)),
         )
 
     def limit(self, key: str, default: int = 0) -> int:

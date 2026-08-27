@@ -39,6 +39,9 @@ Measured on Surface Go 4 (Intel N200, 8GB RAM), httpx HTTP/2 build.
   UNAVAILABLE verdicts persist in state.json with observation ts; warm re-scan serves
   them without any HTTP call (blocked statuses always re-probed live). Measured:
   probe stage 11 requests -> 0 on second run. CLI: `--cache-ttl`, `--clear-cache`.
+- **Budget modes**: `max_pages` / `time_budget_seconds` (CLI `--max-pages`, `--time-budget`) cap total collection pages and wall clock across all sources; reverse-chronological feeds make the cut naturally recent-first. Smoke: 82->66 candidates in 1.5s collection.
+- **Progressive alerts**: `on_result` hook emits `  [!!] @user BLOCKED_BY` lines during probing
+  instead of only at the end; `progress` ticks every 25 checks.
 
 ## Roadmap (ranked by impact)
 

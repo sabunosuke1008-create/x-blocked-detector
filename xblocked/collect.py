@@ -23,7 +23,14 @@ def _is_final(status: Optional[str]) -> bool:
     return status in (STATUS_OK, STATUS_BLOCKED, "SUSPENDED", "DEACTIVATED", "UNAVAILABLE")
 
 
-def _user_page(fn: Callable[[Optional[str], Optional[int]], tuple[list[Any], Optional[str]]], limit: int, delay_seconds: float, count: int = 100, max_pages: int = 100) -> list[Any]:
+def _user_page(
+    fn: Callable[[Optional[str], Optional[int]], tuple[list[Any], Optional[str]]],
+    limit: int,
+    delay_seconds: float,
+    count: int = 100,
+    max_pages: int = 100,
+    budget=None,
+) -> list[Any]:
     cursor: Optional[str] = None
     out: list[Any] = []
     pages = 0
@@ -31,6 +38,8 @@ def _user_page(fn: Callable[[Optional[str], Optional[int]], tuple[list[Any], Opt
         pages += 1
         if pages > max_pages:
             break
+        if budget is not None and not budget.try_take():
+            return out
         items, cursor = fn(cursor, count)
         out.extend(items)
         if len(out) >= limit:
@@ -44,7 +53,7 @@ def _user_page(fn: Callable[[Optional[str], Optional[int]], tuple[list[Any], Opt
     return out[:limit]
 
 
-def _tweet_page(fn, limit, delay_seconds, count: int = 100, max_pages: int = 100) -> list[dict]:
+def _tweet_page(fn, limit, delay_seconds, count: int = 100, max_pages: int = 100, budget=None) -> list[dict]:
     cursor: Optional[str] = None
     out: list[dict] = []
     pages = 0
@@ -52,6 +61,8 @@ def _tweet_page(fn, limit, delay_seconds, count: int = 100, max_pages: int = 100
         pages += 1
         if pages > max_pages:
             break
+        if budget is not None and not budget.try_take():
+            return out
         tweets, cursor = fn(cursor, count)
         out.extend(tweets)
         if len(out) >= limit:
@@ -168,6 +179,7 @@ def collect_candidates(
     me_screen_name: str,
     limits: dict[str, int],
     delay_seconds: float,
+    budget=None,
 ) -> tuple[dict[str, Candidate], list[str]]:
     seen: dict[str, Candidate] = {}
     skipped: list[str] = []
@@ -190,7 +202,7 @@ def collect_candidates(
             return
         t0 = time.time()
         try:
-            items = _user_page(fn, limit, delay_seconds)
+            items = _user_page(fn, limit, delay_seconds, budget=budget)
             cands = []
             for r in items:
                 c = _from_check(r, name, me_id)
@@ -205,7 +217,7 @@ def collect_candidates(
             return
         t0 = time.time()
         try:
-            tweets = _tweet_page(fn, limit, delay_seconds)
+            tweets = _tweet_page(fn, limit, delay_seconds, budget=budget)
             finish(name, _tweet_candidates(tweets, name, me_id), len(tweets), t0)
         except Exception as exc:  # noqa: BLE001
             record_skip(name, exc)
@@ -250,7 +262,7 @@ def collect_candidates(
     my_limit = max(cap("max_tweet_threads"), 20 if needs_favrt else 0, cap("max_own_tweets"))
     fut_my = ex.submit(_tweet_page,
                        lambda cur, cnt: client.user_tweets(me_id, cursor=cur, count=cnt),
-                       my_limit, delay_seconds) if my_limit > 0 else None
+                       my_limit, delay_seconds, budget=budget) if my_limit > 0 else None
 
     def chain_my() -> None:
         tweets: list[dict] = []
@@ -275,7 +287,7 @@ def collect_candidates(
 
         def thread_task(tid: str):
             replies = _tweet_page(lambda cur, cnt: client.tweet_thread(tid, cursor=cur, count=cnt),
-                                  50, 0.0, max_pages=3)
+                                  50, 0.0, max_pages=3, budget=budget)
             return _tweet_candidates(replies, f"replies:{tid[:8]}", me_id)
 
         for tid in ids[: cap("max_tweet_threads")] if needs_threads else []:
@@ -316,5 +328,8 @@ def collect_candidates(
         except Exception as exc:  # noqa: BLE001
             record_skip("chain_my", exc)
     ex.shutdown(wait=True)
+
+    if budget is not None and (budget.exhausted or budget.used):
+        print(f"[collect] {budget.summary()}", flush=True)
 
     return seen, skipped

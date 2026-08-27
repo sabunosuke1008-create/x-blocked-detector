@@ -100,6 +100,7 @@ def run_scan(
     limit_override: Optional[int] = None,
     progress=None,
     refresh_query_ids: bool = False,
+    on_result=None,
 ) -> tuple[list[Outcome], list[str], str]:
     client = build_client(cfg.cookies, cfg.tid_mode, refresh_query_ids=refresh_query_ids)
     print(f"[runner] client built (tid_mode={cfg.tid_mode})", flush=True)
@@ -108,12 +109,18 @@ def run_scan(
     me_id, me_screen = resolve_me(client, screen_name, me_user_id_override or cfg.me_user_id)
     print(f"[runner] me = @{me_screen} ({me_id})  t=+{time.time()-_t0:.1f}s", flush=True)
 
+    budget = None
+    if cfg.max_pages > 0 or cfg.time_budget_seconds > 0:
+        from .budget import PageBudget
+
+        budget = PageBudget(max_pages=cfg.max_pages, seconds=cfg.time_budget_seconds)
     seen, skipped = collect_candidates(
         client,
         me_id=me_id,
         me_screen_name=me_screen,
         limits=cfg.limits,
         delay_seconds=cfg.delay_seconds,
+        budget=budget,
     )
     print(f"[runner] collected {len(seen)} candidates; skipped={skipped}  t=+{time.time()-_t0:.1f}s", flush=True)
 
@@ -156,9 +163,18 @@ def run_scan(
         except Exception:  # noqa: BLE001
             prev_accounts = {}
     ttl_seconds = int(getattr(cfg, "cache_ttl_hours", 0) or 0) * 3600
+
+    def _emit(o: Outcome) -> None:
+        if on_result is None:
+            return
+        try:
+            on_result(o)
+        except Exception:  # noqa: BLE001
+            pass
+
     cache_hits, pending = partition_cached(pending, prev_accounts, ttl_seconds)
     for cand, status, _ts in cache_hits:
-        done_map[cand.user_id or cand.screen_name] = Outcome(
+        o = Outcome(
             candidate=cand,
             result=CheckResult(
                 user_id=cand.user_id,
@@ -169,6 +185,8 @@ def run_scan(
             ),
             cached=True,
         )
+        done_map[cand.user_id or cand.screen_name] = o
+        _emit(o)
     if cache_hits:
         print(f"[runner] {len(cache_hits)} verdicts served from cache  t=+{time.time()-_t0:.1f}s", flush=True)
 
@@ -186,7 +204,9 @@ def run_scan(
                     res = CheckResult(user_id=cand.user_id, screen_name=cand.screen_name, status=STATUS_ERROR, error=str(exc))
                 if res.status == STATUS_ERROR and cand.screen_name:
                     res = single_check_by_screen_name(client, cand.screen_name)
-                done_map[cand.user_id or cand.screen_name] = Outcome(candidate=cand, result=res)
+                o = Outcome(candidate=cand, result=res)
+                done_map[cand.user_id or cand.screen_name] = o
+                _emit(o)
                 done += 1
                 _throttle_if_exhausted(client)
                 if progress:
@@ -215,7 +235,9 @@ def run_scan(
                             res = fut.result()
                         except Exception as exc:  # noqa: BLE001
                             res = CheckResult(user_id=cand.user_id, status=STATUS_ERROR, error=str(exc))
-                        outcomes.append(Outcome(candidate=cand, result=res))
+                        o = Outcome(candidate=cand, result=res)
+                        outcomes.append(o)
+                        _emit(o)
         except Exception as exc:  # noqa: BLE001
             print(f"[runner] prev-blocked recheck skipped: {exc}", flush=True)
 
