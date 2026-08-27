@@ -20,6 +20,7 @@ def _ensure_browser() -> None:
     subprocess.run(
         [_PLAYWRIGHT_CLI, "open", "https://x.com/home"],
         capture_output=True, text=True, timeout=30,
+        encoding="utf-8", errors="replace",
     )
     _session_opened = True
 
@@ -44,6 +45,7 @@ def generate_tids(paths: list[tuple[str, str]]) -> dict[tuple[str, str], Optiona
     result = subprocess.run(
         [_PLAYWRIGHT_CLI, "run-code", "--filename=" + str(tmp)],
         capture_output=True, text=True, timeout=60,
+        encoding="utf-8", errors="replace",
     )
     tmp.unlink(missing_ok=True)
 
@@ -61,7 +63,7 @@ def generate_tids(paths: list[tuple[str, str]]) -> dict[tuple[str, str], Optiona
 def close_browser() -> None:
     global _session_opened
     try:
-        subprocess.run([_PLAYWRIGHT_CLI, "close"], capture_output=True, timeout=15)
+        subprocess.run([_PLAYWRIGHT_CLI, "close"], capture_output=True, timeout=15, encoding="utf-8", errors="replace")
     except Exception:
         pass
     _session_opened = False

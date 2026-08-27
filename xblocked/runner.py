@@ -120,4 +120,35 @@ def run_scan(
                     progress(len(done_map), len(seen))
 
     outcomes = list(done_map.values())
+
+    if cfg.state_file:
+        try:
+            from .report import load_state
+            from .model import STATUS_BLOCKED, STATUS_SMART_BLOCKED
+
+            prev = load_state(cfg.state_file)
+            prev_accounts = prev.get("accounts", {})
+            prev_blocked = [
+                key for key, value in prev_accounts.items()
+                if isinstance(value, dict) and value.get("status") in (STATUS_BLOCKED, STATUS_SMART_BLOCKED)
+            ]
+            already = {o.candidate.user_id or o.candidate.screen_name for o in outcomes}
+            recheck = [k for k in prev_blocked if k not in already]
+            if recheck:
+                print(f"[runner] rechecking {len(recheck)} previously-blocked accounts  t=+{time.time()-_t0:.1f}s", flush=True)
+                with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                    futures = {}
+                    for key in recheck:
+                        cand = Candidate(user_id=key, screen_name="", name="", sources={"prev_blocked"})
+                        futures[pool.submit(_fast_probe, client, me_id, cand)] = cand
+                    for fut in as_completed(futures):
+                        cand = futures[fut]
+                        try:
+                            res = fut.result()
+                        except Exception as exc:  # noqa: BLE001
+                            res = CheckResult(user_id=cand.user_id, status=STATUS_ERROR, error=str(exc))
+                        outcomes.append(Outcome(candidate=cand, result=res))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[runner] prev-blocked recheck skipped: {exc}", flush=True)
+
     return outcomes, skipped, me_id

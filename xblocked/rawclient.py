@@ -29,6 +29,11 @@ class RawClient:
             self.headers["x-csrf-token"] = cookies["ct0"]
         self.rate_remaining: Optional[int] = None
         self.rate_reset: Optional[int] = None
+        self._session = requests.Session()
+        self._session.headers.update(self.headers)
+
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        return self._session.request(method, url, timeout=self.timeout, **kwargs)
 
     def _track_rate(self, resp: requests.Response) -> None:
         try:
@@ -46,7 +51,7 @@ class RawClient:
         }
         url = API_HOST + flag["@path"]
         for attempt in range(retries + 1):
-            resp = requests.get(url, params=params, headers=self.headers, timeout=self.timeout)
+            resp = self._session.get(url, params=params, timeout=self.timeout)
             if resp.status_code == 429 and attempt < retries:
                 time.sleep(60)
                 continue
@@ -64,7 +69,24 @@ class RawClient:
     MOBILE_USER_OP_ID = "DuN4Qld4UROZ63wKFX8cfw"
     MOBILE_USER_OP_NAME = "GetUserByScreenNameQuery"
 
-    _tid_cache: dict[str, str] = {}
+    _shared_tid: Optional[str] = None
+    _shared_tid_at: float = 0.0
+    _TID_TTL = 90.0
+
+    def _get_shared_tid(self) -> Optional[str]:
+        now = time.time()
+        if self._shared_tid and now - self._shared_tid_at < self._TID_TTL:
+            return self._shared_tid
+        try:
+            from .tid_gen import generate_tid
+            tid = generate_tid("/graphql", "GET")
+            if tid:
+                self._shared_tid = tid
+                self._shared_tid_at = now
+                return tid
+        except Exception:
+            pass
+        return self._shared_tid
 
     def mobile_user(self, screen_name: str, use_tid: bool = True) -> CheckResult:
         path = f"/graphql/{self.MOBILE_USER_OP_ID}/{self.MOBILE_USER_OP_NAME}"
@@ -77,20 +99,12 @@ class RawClient:
         }
         headers = dict(self.headers)
         if use_tid:
-            tid = self._tid_cache.get(path)
-            if not tid:
-                try:
-                    from .tid_gen import generate_tid
-                    tid = generate_tid(path, "GET")
-                    if tid:
-                        self._tid_cache[path] = tid
-                except Exception:
-                    pass
+            tid = self._get_shared_tid()
             if tid:
                 headers["x-client-transaction-id"] = tid
         url = API_HOST + path
         for attempt in range(2):
-            resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+            resp = self._session.get(url, params=params, headers=headers, timeout=self.timeout)
             if resp.status_code == 429 and attempt < 1:
                 time.sleep(60)
                 continue
@@ -155,7 +169,7 @@ class RawClient:
         else:
             params["target_screen_name"] = target_screen_name
         url = "https://api.x.com/1.1/friendships/show.json"
-        resp = requests.get(url, params=params, headers=self.headers, timeout=self.timeout)
+        resp = self._session.get(url, params=params, timeout=self.timeout)
         if resp.status_code == 404:
             return CheckResult(user_id=target_id, screen_name=target_screen_name, status=STATUS_DEACTIVATED, detail="not found")
         if resp.status_code == 429:

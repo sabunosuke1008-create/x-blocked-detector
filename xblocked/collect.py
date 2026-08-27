@@ -22,7 +22,7 @@ def _is_final(status: Optional[str]) -> bool:
     return status in (STATUS_OK, STATUS_BLOCKED, "SUSPENDED", "DEACTIVATED", "UNAVAILABLE")
 
 
-def _user_page(fn: Callable[[Optional[str], Optional[int]], tuple[list[Any], Optional[str]]], limit: int, delay_seconds: float, count: int = 20, max_pages: int = 100) -> list[Any]:
+def _user_page(fn: Callable[[Optional[str], Optional[int]], tuple[list[Any], Optional[str]]], limit: int, delay_seconds: float, count: int = 100, max_pages: int = 100) -> list[Any]:
     cursor: Optional[str] = None
     out: list[Any] = []
     pages = 0
@@ -43,7 +43,7 @@ def _user_page(fn: Callable[[Optional[str], Optional[int]], tuple[list[Any], Opt
     return out[:limit]
 
 
-def _tweet_page(fn, limit, delay_seconds, count: int = 20, max_pages: int = 100) -> list[dict]:
+def _tweet_page(fn, limit, delay_seconds, count: int = 100, max_pages: int = 100) -> list[dict]:
     cursor: Optional[str] = None
     out: list[dict] = []
     pages = 0
