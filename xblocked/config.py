@@ -25,7 +25,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "delay_seconds": 1.0,
     "batch_size": 100,
-    "concurrency": 6,
+    "concurrency": 12,
     "tid_mode": "auto",
     "output_csv": "blocked_report.csv",
     "state_file": ".state.json",

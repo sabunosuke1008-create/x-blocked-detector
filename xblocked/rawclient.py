@@ -33,11 +33,28 @@ class RawClient:
             http2=True,
             headers=self.headers,
             timeout=self.timeout,
-            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            limits=httpx.Limits(max_connections=48, max_keepalive_connections=24),
         )
 
     def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        return self._session.request(method, url, timeout=self.timeout, **kwargs)
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                return self._session.request(method, url, timeout=self.timeout, **kwargs)
+            except (
+                httpx.TransportError,
+                ConnectionError,
+                OSError,
+            ) as exc:
+                if isinstance(exc, httpx.TimeoutException):
+                    raise
+                if isinstance(exc, RuntimeError) and "deque mutated" not in str(exc):
+                    raise
+                # transient local socket errors (e.g. Windows WSAEWOULDBLOCK 10035)
+                last_exc = exc
+                time.sleep(0.04 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
 
     def _track_rate(self, resp: httpx.Response) -> None:
         try:
