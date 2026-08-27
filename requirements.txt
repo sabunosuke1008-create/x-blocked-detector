@@ -1,1 +1,2 @@
 twitter_openapi_python>=0.0.44
+httpx[http2]>=0.28

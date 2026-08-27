@@ -4,7 +4,7 @@ import json
 import time
 from typing import Any, Optional
 
-import requests
+import httpx
 
 from .model import CheckResult, classify, parse_tweets_timeline, parse_users_timeline
 from .util import cookie_str
@@ -29,13 +29,17 @@ class RawClient:
             self.headers["x-csrf-token"] = cookies["ct0"]
         self.rate_remaining: Optional[int] = None
         self.rate_reset: Optional[int] = None
-        self._session = requests.Session()
-        self._session.headers.update(self.headers)
+        self._session = httpx.Client(
+            http2=True,
+            headers=self.headers,
+            timeout=self.timeout,
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+        )
 
-    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         return self._session.request(method, url, timeout=self.timeout, **kwargs)
 
-    def _track_rate(self, resp: requests.Response) -> None:
+    def _track_rate(self, resp: httpx.Response) -> None:
         try:
             self.rate_remaining = int(resp.headers.get("x-rate-limit-remaining", self.rate_remaining or -1))
             self.rate_reset = int(resp.headers.get("x-rate-limit-reset", self.rate_reset or 0))
@@ -51,7 +55,7 @@ class RawClient:
         }
         url = API_HOST + flag["@path"]
         for attempt in range(retries + 1):
-            resp = self._session.get(url, params=params, timeout=self.timeout)
+            resp = self._request("GET", url, params=params)
             if resp.status_code == 429 and attempt < retries:
                 time.sleep(60)
                 continue
@@ -104,7 +108,7 @@ class RawClient:
                 headers["x-client-transaction-id"] = tid
         url = API_HOST + path
         for attempt in range(2):
-            resp = self._session.get(url, params=params, headers=headers, timeout=self.timeout)
+            resp = self._request("GET", url, params=params, headers=headers)
             if resp.status_code == 429 and attempt < 1:
                 time.sleep(60)
                 continue
@@ -169,7 +173,7 @@ class RawClient:
         else:
             params["target_screen_name"] = target_screen_name
         url = "https://api.x.com/1.1/friendships/show.json"
-        resp = self._session.get(url, params=params, timeout=self.timeout)
+        resp = self._request("GET", url, params=params)
         if resp.status_code == 404:
             return CheckResult(user_id=target_id, screen_name=target_screen_name, status=STATUS_DEACTIVATED, detail="not found")
         if resp.status_code == 429:
