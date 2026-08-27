@@ -10,7 +10,6 @@ from typing import Optional
 
 _TID_SCRIPT = Path(__file__).parent / "pw_tid_gen.js"
 _TID_PATH_RE = re.compile(r'"tid"\s*:\s*"([^"]+)"')
-
 _session_opened = False
 
 
@@ -80,7 +79,7 @@ def generate_tids(paths: list[tuple[str, str]]) -> dict[tuple[str, str], Optiona
     tmp = _TID_SCRIPT.parent / "pw_tid_tmp.js"
     tmp.write_text(script, encoding="utf-8")
 
-    argv = [*base, "run-code", "--filename=" + str(tmp)]
+    argv = [*base, "--raw", "run-code", "--filename=" + str(tmp)]
     try:
         result = subprocess.run(
             argv,
@@ -93,9 +92,20 @@ def generate_tids(paths: list[tuple[str, str]]) -> dict[tuple[str, str], Optiona
         return out
     tmp.unlink(missing_ok=True)
 
-    m = _TID_PATH_RE.search(result.stdout)
-    if m and len(m.group(1)) > 50:
-        tid = m.group(1)
+    # playwright-cli --raw emits the JS result as a JSON-encoded string:
+    #   '"{\"tid\":\"...\"}"'  -> json.loads x2 -> {"tid": "..."}
+    tid: Optional[str] = None
+    try:
+        inner = json.loads(result.stdout.strip())
+        if isinstance(inner, str):
+            data = json.loads(inner)
+            if isinstance(data, dict):
+                tid = data.get("tid")
+    except Exception:
+        m = _TID_PATH_RE.search(result.stdout)
+        if m:
+            tid = m.group(1)
+    if tid and len(tid) > 50:
         for key in out:
             out[key] = tid
     return out
