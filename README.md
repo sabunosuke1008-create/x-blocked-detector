@@ -1,4 +1,4 @@
-# x-blocked-detector (prototype)
+﻿# x-blocked-detector (prototype)
 
 「自分をブロックしている X(Twitter)アカウント」を、フォロワー/フォロー中・自分と接点のあるアカウントを対象に検出するプロトタイプです。
 
@@ -131,11 +131,12 @@ Playwright が利用できない環境では TID 無しでフォールバック�
 
 ## 判定の流れ(速度)
 
-1. 候補収集(いいね・ブックマーク・自分のツイート・コネクトタブ・通知・リプツリー etc.)を並列ページングで取得
-2. 一括(`UsersByRestIds`)を試す → 403 なら即フォールバック
-3. **`friendships/show.json` を並列(`concurrency` 既定6)で叩いて `source.blocked_by` を判定**
-   - レート上限(800/15分)に達したらリセット時刻まで自動待機
-   - 空ページを返すタイムラインは即終了し、無駄なページングを排除
+1. 候補収集(いいね・ブックマーク・自分のツイート・コネクトタブ・通知・リプツリー etc.)を**全ソース単一プールで並列**(my_tweets は1回だけ取得して threads/fav+rt と共有)
+2. 収集レスポンス内の inline 判定(`relationship_perspectives.blocked_by`)で約9割はこの時点で確定 → プローブ不要
+3. 残りは一括(`UsersByRestIds`)→403なら **HTTP/2多重化した `friendships/show.json` を並列プローブ**(実測約85req/s・レート制限は実発動未確認)
+4. 判定済み(`cache_ttl_hours`以内)の OK 系候補は state.json キャッシュから即返却(再スキャンでプローブ0件も可能)
+
+CLI: `--cache-ttl HOURS`(上書き)/ `--clear-cache`(state 削除後スキャン)
 
 実測(当該アカウント・フォロー8+自分のツイート5): **7秒で完了**(従来の逐次方式は85秒)。数百候補でも数十秒〜1分程度で収まります。
 
@@ -187,8 +188,9 @@ X 側の仕様変更でレスポンスから `legacy` が消える等の構造�
 | `limits.use_search` / `search_queries` | 検索(`to:handle`)で接点候補を追加 ※2026-08現在404 |
 | `delay_seconds` | ページ間スリープ(大きいほど安全) |
 | `batch_size` | 一括判定のバッチサイズ(最大100) |
-| `concurrency` | 単発判定の並列数(既定6、最大16) |
+| `concurrency` | 単発判定の並列数(既定12、最大16。実測85リクエスト/秒で頭打ち) |
 | `tid_mode` | `auto`(既定): 通常の `x-client-transaction-id` を試し、生成できない場合はヘッダなしでフォールバック / `off`: 最初からヘッダなし |
+| `cache_ttl_hours` | 判定キャッシュのTTL(時間)。OK/凍結等の確定判定を state.json に保存し再スキャン時はネットワーク不要。被ブロック判定は常に生プローブで再確認。既定168、0で無効 |
 
 ## テスト
 

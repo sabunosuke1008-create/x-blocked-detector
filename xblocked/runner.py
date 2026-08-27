@@ -15,6 +15,13 @@ from .classify import (
 )
 from .collect import Candidate, collect_candidates
 from .config import Config
+from .model import (
+    STATUS_DEACTIVATED,
+    STATUS_OK,
+    STATUS_SMART_BLOCKED,
+    STATUS_SUSPENDED,
+    STATUS_UNAVAILABLE,
+)
 from .client import build_client, resolve_me
 
 
@@ -22,6 +29,43 @@ from .client import build_client, resolve_me
 class Outcome:
     candidate: Candidate
     result: CheckResult
+    cached: bool = False
+
+
+# verdicts that may be reused from cache; blocked statuses are always re-probed live
+_CACHEABLE = {STATUS_OK, STATUS_SUSPENDED, STATUS_DEACTIVATED, STATUS_UNAVAILABLE}
+
+
+def partition_cached(
+    pending: list[Candidate],
+    prev_accounts: dict,
+    ttl_seconds: int,
+    now: Optional[float] = None,
+) -> tuple[list[tuple[Candidate, str, Optional[int]]], list[Candidate]]:
+    """Split candidates needing a check into (cache_hits, still_pending).
+
+    Cache hits become (candidate, status, ts). Blocked statuses never come
+    from the cache so every previously-blocked account is re-probed each run.
+    Records without an integer ts are treated as stale.
+    """
+    if ttl_seconds <= 0:
+        return [], pending
+    now_f = time.time() if now is None else now
+    hits: list[tuple[Candidate, str, Optional[int]]] = []
+    fresh: list[Candidate] = []
+    for cand in pending:
+        key = cand.user_id or cand.screen_name or ""
+        rec = prev_accounts.get(key) if isinstance(prev_accounts, dict) else None
+        if not isinstance(rec, dict):
+            fresh.append(cand)
+            continue
+        status = rec.get("status")
+        ts = rec.get("ts")
+        if status in _CACHEABLE and isinstance(ts, int) and (now_f - ts) <= ttl_seconds:
+            hits.append((cand, str(status), ts))
+        else:
+            fresh.append(cand)
+    return hits, fresh
 
 
 def _result_from_candidate(cand: Candidate) -> CheckResult:
@@ -99,6 +143,35 @@ def run_scan(
         else:
             pending.append(cand)
 
+    # verdict cache: reuse fresh non-blocked verdicts, always re-probe blockers
+    prev_accounts: dict = {}
+    if cfg.state_file:
+        try:
+            from .report import load_state
+
+            st = load_state(cfg.state_file)
+            acc = st.get("accounts") if isinstance(st, dict) else None
+            if isinstance(acc, dict):
+                prev_accounts = acc
+        except Exception:  # noqa: BLE001
+            prev_accounts = {}
+    ttl_seconds = int(getattr(cfg, "cache_ttl_hours", 0) or 0) * 3600
+    cache_hits, pending = partition_cached(pending, prev_accounts, ttl_seconds)
+    for cand, status, _ts in cache_hits:
+        done_map[cand.user_id or cand.screen_name] = Outcome(
+            candidate=cand,
+            result=CheckResult(
+                user_id=cand.user_id,
+                screen_name=cand.screen_name,
+                name=cand.name,
+                status=status,
+                blocked_by=status == STATUS_BLOCKED,
+            ),
+            cached=True,
+        )
+    if cache_hits:
+        print(f"[runner] {len(cache_hits)} verdicts served from cache  t=+{time.time()-_t0:.1f}s", flush=True)
+
     concurrency = min(max(int(getattr(cfg, "concurrency", 6) or 6), 1), 16)
     if pending:
         print(f"[runner] probing {len(pending)} candidates with concurrency={concurrency}  t=+{time.time()-_t0:.1f}s", flush=True)
@@ -123,11 +196,6 @@ def run_scan(
 
     if cfg.state_file:
         try:
-            from .report import load_state
-            from .model import STATUS_BLOCKED, STATUS_SMART_BLOCKED
-
-            prev = load_state(cfg.state_file)
-            prev_accounts = prev.get("accounts", {})
             prev_blocked = [
                 key for key, value in prev_accounts.items()
                 if isinstance(value, dict) and value.get("status") in (STATUS_BLOCKED, STATUS_SMART_BLOCKED)

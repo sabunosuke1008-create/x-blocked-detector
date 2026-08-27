@@ -27,10 +27,18 @@ Measured on Surface Go 4 (Intel N200, 8GB RAM), httpx HTTP/2 build.
 ## Shipped optimizations
 
 - httpx HTTP/2 migration, unified pooled client (0.16s avg latency per check)
-- Transient retry inside `_request`: WinError 10035, ConnectionError/OSError,
-  httpcore "deque mutated during iteration" (excl. timeouts)
+- Transient retry inside `_request`: WinError 10035 (WSAEWOULDBLOCK), ConnectionError/
+  OSError, httpcore "deque mutated during iteration" x6 with exponential-ish backoff
+  (timeouts re-raised). Fan-out failures: 7/40 -> 0
 - Connection pool raised 32/16 -> 48/24 h2 connections
-- Default concurrency 6 -> 12 (measured safe; plateau ~85/s)
+- Default concurrency 6 -> 12 (probe throughput plateau measured ~85/s)
+- **Unified collection pipeline**: all sources + threads + favoriters/retweeters run in
+  one pool; my_tweets fetched once and shared (previously 3 serial phases duplicated it).
+  Smoke scan: 6.1s -> 4.5s collection phase
+- **Verdict cache** (`cache_ttl_hours`, default 168): OK/SUSPENDED/DEACTIVATED/
+  UNAVAILABLE verdicts persist in state.json with observation ts; warm re-scan serves
+  them without any HTTP call (blocked statuses always re-probed live). Measured:
+  probe stage 11 requests -> 0 on second run. CLI: `--cache-ttl`, `--clear-cache`.
 
 ## Roadmap (ranked by impact)
 

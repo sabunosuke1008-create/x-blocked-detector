@@ -5,6 +5,8 @@ from xblocked.runner import run_scan
 from xblocked.report import diff_state, print_report, save_state
 from xblocked.report import to_csv
 
+from pathlib import Path
+
 
 def main() -> int:
     import argparse
@@ -31,12 +33,22 @@ def main() -> int:
         action="store_true",
         help="force refresh of GraphQL query ids from the live web client before running",
     )
+    parser.add_argument(
+        "--cache-ttl",
+        type=int,
+        default=None,
+        metavar="HOURS",
+        help="verdict cache TTL in hours; 0 disables caching (default from config, 168)",
+    )
+    parser.add_argument("--clear-cache", action="store_true", help="delete the state file before scanning")
     parser.add_argument("--dry-run", action="store_true", help="validate config only, no network calls")
     args = parser.parse_args()
 
     cfg = Config.load(args.config)
     if args.tid:
         cfg.tid_mode = args.tid
+    if args.cache_ttl is not None:
+        cfg.cache_ttl_hours = args.cache_ttl
     problems = cfg.validate()
     if problems:
         print("config problems:")
@@ -80,6 +92,10 @@ def main() -> int:
                 f"name={result.name or ''} detail={result.detail} error={result.error}"
             )
         return 0
+
+    if args.clear_cache and cfg.state_file:
+        Path(cfg.state_file).unlink(missing_ok=True)
+        print(f"state cleared: {cfg.state_file}")
 
     outcomes, skipped, me_id = run_scan(cfg, limit_override=args.limit, refresh_query_ids=args.refresh_ids)
 

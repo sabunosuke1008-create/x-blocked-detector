@@ -38,7 +38,8 @@ class RawClient:
 
     def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         last_exc: Exception | None = None
-        for attempt in range(3):
+        backoffs = (0.05, 0.08, 0.15, 0.3, 0.6)
+        for attempt in range(len(backoffs) + 1):
             try:
                 return self._session.request(method, url, timeout=self.timeout, **kwargs)
             except (
@@ -52,7 +53,8 @@ class RawClient:
                     raise
                 # transient local socket errors (e.g. Windows WSAEWOULDBLOCK 10035)
                 last_exc = exc
-                time.sleep(0.04 * (attempt + 1))
+                if attempt < len(backoffs):
+                    time.sleep(backoffs[attempt])
         assert last_exc is not None
         raise last_exc
 

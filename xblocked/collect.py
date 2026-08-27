@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -170,111 +171,150 @@ def collect_candidates(
 ) -> tuple[dict[str, Candidate], list[str]]:
     seen: dict[str, Candidate] = {}
     skipped: list[str] = []
+    mu = threading.Lock()
 
     def cap(key: str) -> int:
         return int(limits.get(key, 0) or 0)
 
-    def run_user(name: str, fn, limit: int) -> None:
+    def record_skip(label: str, exc: Exception) -> None:
+        with mu:
+            skipped.append(f"{label}: {exc}")
+
+    def finish(label: str, cands: list[Candidate], n_items: int, t0: float) -> None:
+        with mu:
+            merge(seen, cands)
+            print(f"[collect][{label}] {n_items} items in {time.time()-t0:.1f}s", flush=True)
+
+    def do_user(name: str, fn, limit: int) -> None:
         if limit <= 0:
             return
+        t0 = time.time()
         try:
-            _s = time.time()
             items = _user_page(fn, limit, delay_seconds)
             cands = []
             for r in items:
                 c = _from_check(r, name, me_id)
                 if c:
                     cands.append(c)
-            merge(seen, cands)
-            print(f"[collect][{name}] {len(items)} items in {time.time()-_s:.1f}s", flush=True)
+            finish(name, cands, len(items), t0)
         except Exception as exc:  # noqa: BLE001
-            skipped.append(f"{name}: {exc}")
+            record_skip(name, exc)
 
-    def run_tweets(name: str, fn, limit: int) -> None:
+    def fetch_tweets(name: str, fn, limit: int) -> None:
         if limit <= 0:
             return
+        t0 = time.time()
         try:
-            _s = time.time()
             tweets = _tweet_page(fn, limit, delay_seconds)
-            merge(seen, _tweet_candidates(tweets, name, me_id))
-            print(f"[collect][{name}] {len(tweets)} tweets in {time.time()-_s:.1f}s", flush=True)
+            finish(name, _tweet_candidates(tweets, name, me_id), len(tweets), t0)
         except Exception as exc:  # noqa: BLE001
-            skipped.append(f"{name}: {exc}")
+            record_skip(name, exc)
 
-    parallel_sources: list[tuple[str, str, Callable]] = [
-        ("max_following", "following", lambda: run_user("following", lambda cur, cnt: client.following(me_id, cursor=cur, count=cnt), cap("max_following"))),
-        ("max_followers", "followers", lambda: run_user("followers", lambda cur, cnt: client.followers(me_id, cursor=cur, count=cnt), cap("max_followers"))),
-        ("max_own_tweets", "own_tweets", lambda: run_tweets("own_tweets", lambda cur, cnt: client.user_tweets(me_id, cursor=cur, count=cnt), cap("max_own_tweets"))),
-        ("max_likes", "likes", lambda: run_tweets("likes", lambda cur, cnt: client.likes(me_id, cursor=cur, count=cnt), cap("max_likes"))),
-        ("max_bookmarks", "bookmarks", lambda: run_tweets("bookmarks", lambda cur, cnt: client.bookmarks(cursor=cur, count=cnt), cap("max_bookmarks"))),
-        ("max_connect", "connect", lambda: run_tweets("connect", lambda cur, cnt: client.connect_tab(cursor=cur, count=cnt), cap("max_connect"))),
-        ("max_notifications", "notifications", lambda: run_tweets("notifications", lambda cur, cnt: client.notifications(cursor=cur, count=cnt), cap("max_notifications"))),
-        ("max_followers_you_know", "followers_you_know", lambda: run_user("followers_you_know", lambda cur, cnt: client.followers_you_know(me_id, cursor=cur, count=cnt), cap("max_followers_you_know"))),
+    ex = ThreadPoolExecutor(max_workers=10)
+    futs: dict = {}
+
+    def submit(label: str, fn) -> None:
+        futs[ex.submit(fn)] = label
+
+    user_sources = [
+        ("max_following", "following", lambda cur, cnt: client.following(me_id, cursor=cur, count=cnt)),
+        ("max_followers", "followers", lambda cur, cnt: client.followers(me_id, cursor=cur, count=cnt)),
+        ("max_followers_you_know", "followers_you_know",
+         lambda cur, cnt: client.followers_you_know(me_id, cursor=cur, count=cnt)),
     ]
-    active = [(label, fn) for key, label, fn in parallel_sources if cap(key) > 0]
-    if active:
-        with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-            futures = {pool.submit(fn): name for name, fn in active}
-            for fut in as_completed(futures):
-                try:
-                    fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    skipped.append(f"{futures[fut]}: {exc}")
-
-    if cap("max_tweet_threads") > 0:
-        try:
-            _s = time.time()
-            mine = _tweet_page(lambda cur, cnt: client.user_tweets(me_id, cursor=cur, count=cnt), cap("max_tweet_threads"), 0.0)
-            thread_ids = [t.get("id_str") or t.get("rest_id") for t in mine]
-            thread_ids = [x for x in thread_ids if x]
-
-            def fetch_thread(tid: str) -> list[Candidate]:
-                replies = _tweet_page(lambda cur, cnt: client.tweet_thread(tid, cursor=cur, count=cnt), 50, 0.0, max_pages=3)
-                return _tweet_candidates(replies, f"replies:{tid[:8]}", me_id)
-
-            with ThreadPoolExecutor(max_workers=min(len(thread_ids), 8)) as tp:
-                all_cands = []
-                futures = {tp.submit(fetch_thread, tid): tid for tid in thread_ids}
-                for fut in as_completed(futures):
-                    try:
-                        all_cands.extend(fut.result())
-                    except Exception:
-                        pass
-                merge(seen, all_cands)
-            print(f"[collect][tweet_thr] {len(thread_ids)} threads in {time.time()-_s:.1f}s", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            skipped.append(f"tweet_threads: {exc}")
-
+    tweet_sources = [
+        ("max_likes", "likes", lambda cur, cnt: client.likes(me_id, cursor=cur, count=cnt)),
+        ("max_bookmarks", "bookmarks", lambda cur, cnt: client.bookmarks(cursor=cur, count=cnt)),
+        ("max_connect", "connect", lambda cur, cnt: client.connect_tab(cursor=cur, count=cnt)),
+        ("max_notifications", "notifications", lambda cur, cnt: client.notifications(cursor=cur, count=cnt)),
+    ]
+    for key, name, fn in user_sources:
+        if cap(key) > 0:
+            submit(name, lambda n=name, f=fn, k=key: do_user(n, f, cap(k)))
+    for key, name, fn in tweet_sources:
+        if cap(key) > 0:
+            submit(name, lambda n=name, f=fn, k=key: fetch_tweets(n, f, cap(k)))
     if limits.get("use_search"):
-        for query in limits.get("search_queries", []):
-            run_tweets(f"search:{query}", lambda cur, cnt: client.search(query, cursor=cur, count=cnt), cap("max_own_tweets") or 100)
+        for query in limits.get("search_queries") or []:
+            q_lim = cap("max_own_tweets") or 100
+            submit(
+                f"search:{query}",
+                lambda qq=query, ql=q_lim: fetch_tweets(
+                    f"search:{qq}", lambda cur, cnt, q=qq: client.search(q, cursor=cur, count=cnt), ql
+                ),
+            )
 
-    my_tweets: list[str] = []
-    if cap("max_favoriters") > 0 or cap("max_retweeters") > 0:
+    needs_own = cap("max_own_tweets") > 0
+    needs_threads = cap("max_tweet_threads") > 0
+    needs_favrt = cap("max_favoriters") > 0 or cap("max_retweeters") > 0
+    my_limit = max(cap("max_tweet_threads"), 20 if needs_favrt else 0, cap("max_own_tweets"))
+    fut_my = ex.submit(_tweet_page,
+                       lambda cur, cnt: client.user_tweets(me_id, cursor=cur, count=cnt),
+                       my_limit, delay_seconds) if my_limit > 0 else None
+
+    def chain_my() -> None:
+        tweets: list[dict] = []
         try:
-            tweets = _tweet_page(lambda cur, cnt: client.user_tweets(me_id, cursor=cur, count=cnt), 20, delay_seconds)
-            my_tweets = [t.get("id_str") or t.get("rest_id") for t in tweets]
-            my_tweets = [x for x in my_tweets if x]
+            if fut_my is not None:
+                tweets = fut_my.result()
         except Exception as exc:  # noqa: BLE001
-            skipped.append(f"my_tweets: {exc}")
+            record_skip("my_tweets", exc)
+            return
+        if not tweets:
+            return
+        ids = [t.get("id_str") or t.get("rest_id") for t in tweets]
+        ids = [x for x in ids if x]
+        if needs_own:
+            try:
+                finish("own_tweets",
+                       _tweet_candidates(tweets[: cap("max_own_tweets")], "own_tweets", me_id),
+                       min(len(tweets), cap("max_own_tweets")), time.time())
+            except Exception as exc:  # noqa: BLE001
+                record_skip("own_tweets", exc)
+        derived: dict = {}
 
-    fr_rt_tasks: list[tuple[str, Callable]] = []
-    if cap("max_favoriters") > 0:
-        for tweet_id in my_tweets:
-            fr_rt_tasks.append((f"favoriters:{tweet_id[:8]}", lambda tid=tweet_id: run_user(f"favoriters:{tid[:8]}", lambda cur, cnt: client.favoriters(tid, cursor=cur, count=cnt), cap("max_favoriters"))))
-    if cap("max_retweeters") > 0:
-        for tweet_id in my_tweets:
-            fr_rt_tasks.append((f"retweeters:{tweet_id[:8]}", lambda tid=tweet_id: run_user(f"retweeters:{tid[:8]}", lambda cur, cnt: client.retweeters(tid, cursor=cur, count=cnt), cap("max_retweeters"))))
+        def thread_task(tid: str):
+            replies = _tweet_page(lambda cur, cnt: client.tweet_thread(tid, cursor=cur, count=cnt),
+                                  50, 0.0, max_pages=3)
+            return _tweet_candidates(replies, f"replies:{tid[:8]}", me_id)
 
-    if fr_rt_tasks:
-        _s = time.time()
-        with ThreadPoolExecutor(max_workers=min(len(fr_rt_tasks), 10)) as pool:
-            futures = {pool.submit(fn): name for name, fn in fr_rt_tasks}
-            for fut in as_completed(futures):
-                try:
-                    fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    skipped.append(f"{futures[fut]}: {exc}")
-        print(f"[collect][fav+rt] {len(fr_rt_tasks)} tasks in {time.time()-_s:.1f}s", flush=True)
+        for tid in ids[: cap("max_tweet_threads")] if needs_threads else []:
+            derived[ex.submit(thread_task, tid)] = f"replies:{tid[:8]}"
+        for tid in ids[:20]:
+            if cap("max_favoriters") > 0:
+                derived[ex.submit(
+                    lambda tid=tid: do_user(f"favoriters:{tid[:8]}",
+                                            lambda cur, cnt, t=tid: client.favoriters(t, cursor=cur, count=cnt),
+                                            cap("max_favoriters")))] = f"favoriters:{tid[:8]}"
+            if cap("max_retweeters") > 0:
+                derived[ex.submit(
+                    lambda tid=tid: do_user(f"retweeters:{tid[:8]}",
+                                            lambda cur, cnt, t=tid: client.retweeters(t, cursor=cur, count=cnt),
+                                            cap("max_retweeters")))] = f"retweeters:{tid[:8]}"
+        for f in derived:
+            try:
+                got = f.result()
+                if isinstance(got, list):
+                    with mu:
+                        merge(seen, got)
+                        print(f"[collect][{derived[f]}] merged {len(got)} candidates", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                record_skip(derived[f], exc)
+
+    fut_chain = ex.submit(chain_my) if (needs_own or needs_threads or needs_favrt) else None
+
+    all_futs = list(futs) + ([fut_chain] if fut_chain is not None else [])
+    wait(all_futs)
+    for f, label in futs.items():
+        try:
+            f.result()
+        except Exception as exc:  # noqa: BLE001
+            record_skip(label, exc)
+    if fut_chain is not None:
+        try:
+            fut_chain.result()
+        except Exception as exc:  # noqa: BLE001
+            record_skip("chain_my", exc)
+    ex.shutdown(wait=True)
 
     return seen, skipped

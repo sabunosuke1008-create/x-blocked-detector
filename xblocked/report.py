@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -40,7 +41,7 @@ def print_report(outcomes: list[Outcome], skipped: list[str]) -> None:
 def to_csv(outcomes: list[Outcome], path: str | Path) -> None:
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["user_id", "screen_name", "name", "status", "blocked_by", "detail", "error", "sources"])
+        writer.writerow(["user_id", "screen_name", "name", "status", "blocked_by", "detail", "error", "sources", "cached"])
         for o in outcomes:
             c, r = o.candidate, o.result
             writer.writerow(
@@ -53,6 +54,7 @@ def to_csv(outcomes: list[Outcome], path: str | Path) -> None:
                     r.detail,
                     r.error,
                     ",".join(sorted(c.sources)),
+                    "yes" if o.cached else "",
                 ]
             )
 
@@ -65,13 +67,22 @@ def load_state(path: str | Path) -> dict:
 
 
 def save_state(path: str | Path, outcomes: list[Outcome]) -> None:
-    accounts = {
-        o.candidate.user_id or o.candidate.screen_name: {
+    prev = load_state(path)
+    prev_accounts = prev.get("accounts", {}) if isinstance(prev, dict) else {}
+    now_ts = int(time.time())
+    accounts = {}
+    for o in outcomes:
+        key = o.candidate.user_id or o.candidate.screen_name
+        old = prev_accounts.get(key)
+        old_ts = old.get("ts") if isinstance(old, dict) else None
+        # ts = last time this verdict was observed live. Cached hits keep the
+        # original observation time so the TTL window is not stretched.
+        ts = old_ts if (o.cached and isinstance(old_ts, int)) else now_ts
+        accounts[key] = {
             "status": o.result.status,
             "screen_name": o.candidate.screen_name,
+            "ts": ts,
         }
-        for o in outcomes
-    }
     payload = {"scanned_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "accounts": accounts}
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
