@@ -70,19 +70,28 @@ def main() -> int:
     if args.mode == "login":
         from pathlib import Path as _Path
 
-        from xblocked.auth_login import LoginError, run_login
+        from xblocked.auth_login import LoginError, node_engine_available, run_login, run_login_node
 
-        print("[login] X password login via twikit (request-based, no browser).")
-        print("[login] if X asks for a verification code, type it in this terminal.")
+        print("[login] X password login. if X asks for a verification code, type it here.")
         print("[login] warning: password logins can trigger X risk control. "
               "prefer a secondary account for testing.")
-        try:
-            result = run_login(cfg)
-        except LoginError as exc:
-            print(f"[login] failed: {exc}")
-            print("[login] manual fallback: log in at x.com in your normal browser, "
-                  "then copy auth_token / ct0 into config.json.")
-            return 1
+        result = None
+        if node_engine_available():
+            print("[login] engine: node (the-convocation/twitter-scraper)")
+            try:
+                result = run_login_node(cfg)
+            except LoginError as exc:
+                print(f"[login] node engine failed: {exc}")
+                print("[login] falling back to twikit engine...")
+        if result is None:
+            print("[login] engine: twikit (request-based)")
+            try:
+                result = run_login(cfg)
+            except LoginError as exc:
+                print(f"[login] failed: {exc}")
+                print("[login] manual fallback: log in at x.com in your normal browser, "
+                      "then copy auth_token / ct0 into config.json.")
+                return 1
         path = _Path(args.config)
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
         raw.setdefault("cookies", {}).update(result.cookies)

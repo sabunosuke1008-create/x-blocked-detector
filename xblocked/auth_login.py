@@ -155,3 +155,48 @@ def run_login(cfg) -> LoginResult:
             "or env XB_LOGIN_EMAIL / XB_LOGIN_USERNAME / XB_LOGIN_PASSWORD"
         )
     return asyncio.run(_login_async(email, username, password, totp))
+
+
+def node_engine_available() -> bool:
+    import shutil
+    from pathlib import Path
+    if not shutil.which("node"):
+        return False
+    script = Path(__file__).resolve().parent.parent / "node_login" / "login_dump.mjs"
+    return script.exists()
+
+
+def run_login_node(cfg, out_path: Optional[str] = None) -> LoginResult:
+    """Login via the Node engine (the-convocation/twitter-scraper, 2026 flow)."""
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    email, username, password, totp = credentials_from(cfg)
+    if not (email or username) or not password:
+        raise LoginError("missing credentials (config auth{} or XB_LOGIN_* env)")
+    if not node_engine_available():
+        raise LoginError("node engine not available (need node in PATH + node_login/)")
+
+    script = Path(__file__).resolve().parent.parent / "node_login" / "login_dump.mjs"
+    out = out_path or str(Path(tempfile.gettempdir()) / "xb_login_cookies.json")
+    env = os.environ | {
+        "XB_LOGIN_EMAIL": email, "XB_LOGIN_USERNAME": username,
+        "XB_LOGIN_PASSWORD": password, "XB_LOGIN_TOTP": totp, "OUT": out,
+    }
+    proc = subprocess.run([shutil.which("node"), str(script)], env=env,
+                          capture_output=True, text=True, timeout=300,
+                          encoding="utf-8", errors="replace", cwd=str(script.parent))
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "")[-300:]
+        if "status: 403" in tail or "cloudflare" in tail.lower():
+            raise LoginError("Cloudflare blocked the login endpoint (403) from this IP/network")
+        raise LoginError(f"node engine failed: {tail}")
+    data = _json.loads(Path(out).read_text(encoding="utf-8"))
+    cookies = {k: str(v) for k, v in (data.get("cookies") or {}).items() if v}
+    if not cookies.get("auth_token"):
+        raise LoginError("node engine returned no auth_token")
+    return LoginResult(cookies=cookies,
+                       user_id=data.get("user_id"), screen_name=data.get("screen_name"))
