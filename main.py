@@ -15,9 +15,9 @@ def main() -> int:
     parser.add_argument("--config", default="config.json", help="path to config.json")
     parser.add_argument(
         "--mode",
-        choices=["scan", "check", "self"],
+        choices=["scan", "check", "self", "login"],
         default="scan",
-        help="scan: collect candidates then check (default). check: check specific handles. self: resolve your own id.",
+        help="scan: collect candidates then check (default). check: check specific handles. self: resolve your own id. login: password login -> write cookies to config (twikit).",
     )
     parser.add_argument("--handles", nargs="+", default=[], help="handles to check in check mode (without @)")
     parser.add_argument("--limit", type=int, default=None, help="max candidates to check")
@@ -67,6 +67,37 @@ def main() -> int:
         cfg.max_pages = args.max_pages
     if args.time_budget is not None:
         cfg.time_budget_seconds = args.time_budget
+    if args.mode == "login":
+        from pathlib import Path as _Path
+
+        from xblocked.auth_login import LoginError, run_login
+
+        print("[login] X password login via twikit (request-based, no browser).")
+        print("[login] if X asks for a verification code, type it in this terminal.")
+        print("[login] warning: password logins can trigger X risk control. "
+              "prefer a secondary account for testing.")
+        try:
+            result = run_login(cfg)
+        except LoginError as exc:
+            print(f"[login] failed: {exc}")
+            print("[login] manual fallback: log in at x.com in your normal browser, "
+                  "then copy auth_token / ct0 into config.json.")
+            return 1
+        path = _Path(args.config)
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        raw.setdefault("cookies", {}).update(result.cookies)
+        path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[login] success as @{result.screen_name or '?'} (id={result.user_id or '?'})")
+        print(f"[login] cookies written to {args.config}")
+        if cfg.me_screen_name:
+            try:
+                client = build_client(Config.load(args.config).cookies, cfg.tid_mode)
+                uid, sn = resolve_me(client, cfg.me_screen_name, cfg.me_user_id)
+                print(f"[login] validated via internal API: @{sn} ({uid})")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[login] cookie validation skipped: {exc}")
+        return 0
+
     problems = cfg.validate()
     if problems:
         print("config problems:")

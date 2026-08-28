@@ -157,3 +157,30 @@ def test_playwright_argv_none_when_no_cli(monkeypatch):
     assert tg._resolve_playwright_argv() is None
     assert tg._resolve_playwright_argv() is None
     assert tg.generate_tid("/graphql", "GET") is None
+
+
+def test_pick_cookies_extracts_session_pair():
+    from xblocked.auth_login import _pick_cookies
+    got = _pick_cookies({"auth_token": "a1", "ct0": "c1", "kdt": "x", "other": "y"})
+    assert got == {"auth_token": "a1", "ct0": "c1"}
+
+
+def test_credentials_env_overrides_config(monkeypatch):
+    from xblocked.auth_login import credentials_from
+
+    class Cfg:
+        auth = {"email": "cfg@x", "password": "cfgpass", "totp_secret": "CFG"}
+
+    monkeypatch.setenv("XB_LOGIN_PASSWORD", "envpass")
+    email, username, password, totp = credentials_from(Cfg())
+    assert email == "cfg@x" and password == "envpass" and totp == "CFG"
+
+
+def test_classify_maps_account_locked():
+    from xblocked.auth_login import LoginNeedsUnlock, _classify
+
+    class AccountLocked(Exception):
+        pass
+
+    err = _classify(AccountLocked("locked"))
+    assert isinstance(err, LoginNeedsUnlock)

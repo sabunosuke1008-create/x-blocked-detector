@@ -7,6 +7,7 @@ from typing import Any
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "cookies": {"auth_token": "", "ct0": ""},
+    "auth": {"email": "", "username": "", "password": "", "totp_secret": ""},
     "me": {"screen_name": "", "user_id": ""},
     "limits": {
         "max_following": 0,
@@ -50,6 +51,7 @@ class Config:
     cache_ttl_hours: int = 168
     max_pages: int = 0
     time_budget_seconds: float = 0.0
+    auth: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
@@ -59,6 +61,7 @@ class Config:
         me = merged["me"] or {}
         return cls(
             cookies=merged["cookies"] or {},
+            auth=dict(merged.get("auth") or {}),
             me_screen_name=str(me.get("screen_name", "")),
             me_user_id=str(me.get("user_id", "")),
             limits=limits,
