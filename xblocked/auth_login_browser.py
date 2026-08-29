@@ -30,10 +30,11 @@ _SEL_PWD = "password"
 
 
 def _headless() -> bool:
-    # Headed (default) is stealthier and renders identically to a real
-    # browser; the CDP port is self-calibrated so loopback filtering on
-    # some ports is avoided. XB_LOGIN_HEADLESS=1 forces headless.
-    return os.environ.get("XB_LOGIN_HEADLESS", "1") == "1"
+    # Headed (default) renders real element rects (needed for the real-click
+    # submit/switch steps) and lets the user watch the automation. The CDP
+    # port is self-calibrated so loopback filtering is avoided.
+    # XB_LOGIN_HEADLESS=1 forces headless.
+    return os.environ.get("XB_LOGIN_HEADLESS", "0") == "1"
 
 
 class _CDP:
@@ -428,13 +429,11 @@ def _run_login_once(cfg, email: str, username: str, password: str,
                                  ("続ける", "Next")):
             raise LoginError(f"identifier step failed; screen={_screen_text(cdp)[:120]!r}")
 
-        # step 2: knowledge check (optional) — try the "Use password" switch
-        # first: it jumps straight to the password screen, skipping both the
-        # username quiz and the email verification code.
+        # step 2: knowledge check (optional) — fill the username answer and
+        # submit; then switch to password at the verify_code screen.
+        # (Clicking "Use password" on the KC screen itself invalidates the
+        # flow state and resets to the start — verified live.)
         if "knowledge_check" in _hash(cdp):
-            _real_click_dialog(cdp, ("パスワードを使用", "Use password"))
-            time.sleep(1.5)
-        if "login_enter_password" not in _hash(cdp) and "knowledge_check" in _hash(cdp):
             if not username:
                 raise LoginError("knowledge check requires the account username")
             if not _fill_submit_real(cdp, _SEL_KC, username, ("続ける", "Next")):
