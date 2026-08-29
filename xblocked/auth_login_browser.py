@@ -126,7 +126,7 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
                 continue
             kinp = None
             try:
-                lbl = page.get_by_role("textbox", name="ユーザー名").first
+                lbl = page.get_by_role("textbox", name="ユーザー名", exact=True).first
                 if lbl.is_visible():
                     kinp = lbl
             except Exception:  # noqa: BLE001
@@ -136,7 +136,8 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
             if kinp is not None and username:
                 cur = kinp.input_value()
                 if cur != username:
-                    kinp.fill(username)
+                    kinp.click()
+                    kinp.press_sequentially(username, delay=60)
                 if not _click_text_button(page, ("続ける", "Next"), 1500):
                     page.keyboard.press("Enter")
                 continue
