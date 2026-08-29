@@ -127,8 +127,11 @@ def _real_click_dialog(cdp: _CDP, texts: tuple[str, ...],
                     ' b.offsetParent !== null && !b.disabled);'
                     ' const b = btns[btns.length - 1]; if (!b) continue;'
                     ' const r = b.getBoundingClientRect();'
-                    ' if (r.width > 30 && r.height > 10)'
-                    ' return {x: r.x + r.width / 2, y: r.y + r.height / 2}; }'
+                    ' if (r.width > 30 && r.height > 10) {'
+                    ' const cx = r.x + r.width / 2, cy = r.y + r.height / 2;'
+                    ' const hit = document.elementFromPoint(cx, cy);'
+                    ' if (hit && (hit === b || b.contains(hit)))'
+                    ' return {x: cx, y: cy}; } }'
                     ' return null; })(' + json.dumps(t) + ')', 6)
                 if pos:
                     cdp.cmd("Input.dispatchMouseEvent",
