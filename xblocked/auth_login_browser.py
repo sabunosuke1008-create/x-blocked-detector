@@ -116,25 +116,29 @@ def _real_click_dialog(cdp: _CDP, texts: tuple[str, ...],
                        timeout_s: float = 4.0) -> bool:
     """Real-mouse-click a button (by text) inside the ACTIVE dialog."""
     deadline = time.time() + timeout_s
+    last_reason = ""
     while time.time() < deadline:
         for t in texts:
             try:
                 pos = cdp.js(
                     '((txt) => { const ds = [...document.querySelectorAll'
                     '("div[role=dialog]")];'
+                    ' if (!ds.length) return {why: "no-dialog"};'
                     ' for (let i = ds.length - 1; i >= 0; i--) {'
                     ' const btns = [...ds[i].querySelectorAll("button, [role=button]")]'
-                    '.filter(b => b.textContent.trim() === txt &&'
-                    ' b.offsetParent !== null && !b.disabled);'
-                    ' const b = btns[btns.length - 1]; if (!b) continue;'
+                    '.filter(b => b.textContent.trim() === txt && !b.disabled);'
+                    ' if (!btns.length) continue;'
+                    ' const b = btns[btns.length - 1];'
                     ' const r = b.getBoundingClientRect();'
-                    ' if (r.width > 30 && r.height > 10) {'
+                    ' if (r.width <= 30 || r.height <= 10) continue;'
                     ' const cx = r.x + r.width / 2, cy = r.y + r.height / 2;'
                     ' const hit = document.elementFromPoint(cx, cy);'
                     ' if (hit && (hit === b || b.contains(hit)))'
-                    ' return {x: cx, y: cy}; } }'
-                    ' return null; })(' + json.dumps(t) + ')', 6)
-                if pos:
+                    ' return {x: cx, y: cy};'
+                    ' return {why: "covered", tag: hit ? hit.tagName : "?"}; }'
+                    ' return {why: "no-button", dialogs: ds.length}; })'
+                    '(' + json.dumps(t) + ')', 6)
+                if pos and pos.get("x") is not None:
                     cdp.cmd("Input.dispatchMouseEvent",
                             {"type": "mouseMoved", "x": pos["x"], "y": pos["y"]}, 8)
                     cdp.cmd("Input.dispatchMouseEvent",
@@ -146,9 +150,12 @@ def _real_click_dialog(cdp: _CDP, texts: tuple[str, ...],
                     print(f"[login-browser] real-clicked {t!r} at "
                           f"({pos['x']:.0f},{pos['y']:.0f})", flush=True)
                     return True
-            except Exception:  # noqa: BLE001
-                pass
+                if pos and pos.get("why"):
+                    last_reason = f"{t}: {pos}"
+            except Exception as exc:  # noqa: BLE001
+                last_reason = f"js-err: {str(exc)[:60]}"
         time.sleep(0.4)
+    print(f"[login-browser] real-click rejected: {last_reason}", flush=True)
     return False
 
 
@@ -428,6 +435,7 @@ def _run_login_once(cfg, email: str, username: str, password: str,
         if not _fill_submit_real(cdp, _SEL_EMAIL, email or username,
                                  ("続ける", "Next")):
             raise LoginError(f"identifier step failed; screen={_screen_text(cdp)[:120]!r}")
+        print(f"[login-browser] after email: hash={_hash(cdp)[:60]!r}", flush=True)
 
         # step 2: knowledge check (optional) — fill the username answer and
         # submit; then switch to password at the verify_code screen.
@@ -436,11 +444,13 @@ def _run_login_once(cfg, email: str, username: str, password: str,
         if "knowledge_check" in _hash(cdp):
             if not username:
                 raise LoginError("knowledge check requires the account username")
+            print(f"[login-browser] KC screen: hash={_hash(cdp)[:60]!r}", flush=True)
             if not _fill_submit_real(cdp, _SEL_KC, username, ("続ける", "Next")):
                 screen = _screen_text(cdp)
                 if "正しくありません" in screen:
                     raise LoginError("knowledge check rejected the username")
                 raise LoginError(f"knowledge check did not advance; screen={screen[:120]!r}")
+            print(f"[login-browser] after KC: hash={_hash(cdp)[:60]!r}", flush=True)
 
         # step 3: verify_code screen -> switch to password
         deadline = time.time() + 15
