@@ -117,8 +117,11 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
             except Exception:  # noqa: BLE001
                 pass
             raise LoginError(f"password input not reached; screen={screen[:120]!r}")
-        pwd.fill(password)
-        _submit_and_wait(page, _SEL_PWD)
+        pwd.press_sequentially(password, delay=40)
+        try:
+            pwd.press("Enter")
+        except Exception:  # noqa: BLE001
+            _submit_and_wait(page, _SEL_PWD)
 
         # step 5: wait for login completion (cookies are the source of truth)
         deadline = time.time() + 30
