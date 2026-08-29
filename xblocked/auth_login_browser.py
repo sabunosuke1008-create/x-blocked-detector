@@ -1,8 +1,12 @@
 """CloakBrowser-based X login (proven path, 2026 JFAPI flow).
 
-Flow (validated live): email -> knowledge_check(username) -> [verify_code ->
+Validated flow: email -> knowledge_check(username) -> [verify_code ->
 "Use password" switch] -> password -> home. Cookies (auth_token/ct0) are
 extracted from the browser context (httpOnly included).
+
+Key selectors (from live DOM):
+  input[name='username_or_email'], input[name='challenge_response'],
+  input[name='password']
 """
 from __future__ import annotations
 
@@ -13,67 +17,54 @@ from typing import Optional
 
 from .auth_login import LoginError, LoginResult, credentials_from
 
-_IDENT_SELECTORS = ("input[name='text']", "input[type='text']", "input:not([type])")
+_SEL_EMAIL = "input[name='username_or_email']"
+_SEL_KC = "input[name='challenge_response']"
+_SEL_PWD = "input[name='password']"
 
 
 def _headless() -> bool:
     return os.environ.get("XB_LOGIN_HEADLESS", "") == "1"
 
 
-def _first_visible(page, selectors: list[str], timeout_ms: int = 4000):
+def _visible(page, sel: str, timeout_ms: int = 4000):
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
-        for sel in selectors:
-            try:
-                for loc in page.locator(sel).all():
-                    try:
-                        if loc.is_visible() and loc.is_enabled() and loc.is_editable():
-                            return loc
-                    except Exception:  # noqa: BLE001
-                        continue
-            except Exception:  # noqa: BLE001
-                pass
-        time.sleep(0.3)
+        try:
+            loc = page.locator(sel).last
+            if loc.is_visible() and loc.is_editable():
+                return loc
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.25)
     return None
 
 
-def _click_text_button(page, texts: tuple[str, ...], timeout_ms: int = 3000) -> bool:
+def _click_text_button(page, texts: tuple[str, ...], timeout_ms: int = 2000) -> bool:
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
         for t in texts:
             try:
-                btn = page.get_by_role("button", name=t, exact=True).first
+                btn = page.get_by_role("button", name=t, exact=True).last
                 if btn.is_visible():
                     btn.click()
                     return True
             except Exception:  # noqa: BLE001
                 pass
-            try:
-                for loc in page.get_by_text(t, exact=True).all():
-                    try:
-                        parent = loc.locator("xpath=ancestor::button[1]")
-                        if parent.count() > 0:
-                            parent.first.click()
-                            return True
-                        if loc.is_visible():
-                            loc.click()
-                            return True
-                    except Exception:  # noqa: BLE001
-                        continue
-            except Exception:  # noqa: BLE001
-                pass
-        time.sleep(0.3)
+        time.sleep(0.25)
     return False
 
 
-def _screen_text(page) -> str:
-    try:
-        return page.locator("div[role='dialog']").first.inner_text(timeout=1500)
-    except Exception:  # noqa: BLE001
+def _submit_and_wait(page, sel_visible: str, wait_s: float = 3.0) -> None:
+    if not _click_text_button(page, ("続ける", "ログイン", "Next", "Log in"), 1500):
+        page.keyboard.press("Enter")
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
         try:
-            return page.locator("body").inner_text(timeout=1500)
+            if not page.locator(sel_visible).first.is_visible():
+                return
         except Exception:  # noqa: BLE001
-            return ""
+            return
+        time.sleep(0.3)
 
 
 def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
@@ -93,71 +84,66 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
         page = context.new_page()
         page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=45000)
 
-        ident = email or username
-        inp = _first_visible(page, list(_IDENT_SELECTORS), 30000)
+        # step 1: identifier
+        inp = _visible(page, _SEL_EMAIL, 30000)
         if inp is None:
-            raise LoginError("login page did not render an identifier input")
-        inp.fill(ident)
-        if not _click_text_button(page, ("続ける", "Next"), 2000):
-            page.keyboard.press("Enter")
+            raise LoginError("login page did not render username_or_email input")
+        inp.fill(email or username)
+        _submit_and_wait(page, _SEL_EMAIL)
 
-        logged_in = False
-        for i in range(40):  # ~60s budget for the interactive steps
-            time.sleep(1.5)
-            url = page.url
-            if url.rstrip("/").endswith("x.com/home") or "/i/jf/onboarding" not in url and "/i/flow" not in url:
-                logged_in = True
-                break
-            screen = _screen_text(page)
-            if i % 3 == 0:
-                print(f"[login-browser] step={i} url={url[:70]} screen={screen[:80]!r}", flush=True)
-            if "正しくありません" in screen:
-                raise LoginError("knowledge check rejected the username")
-            if "許可されていません" in screen:
-                raise LoginError("X risk-blocked this login (account or environment)")
-            pwd = _first_visible(page, ["input[type='password']"], 500)
-            if pwd is not None:
-                pwd.fill(password)
-                page.keyboard.press("Enter")
-                time.sleep(2)
-                continue
+        # step 2: knowledge check (optional)
+        kc = _visible(page, _SEL_KC, 8000)
+        if kc is not None:
+            if not username:
+                raise LoginError("knowledge check requires the account username")
+            kc.fill(username)
+            _submit_and_wait(page, _SEL_KC)
+
+        # step 3: email verify code screen may appear -> switch to password
+        deadline = time.time() + 10
+        while time.time() < deadline:
             if _click_text_button(page, ("パスワードを使用", "Use password"), 800):
-                print("[login-browser] clicked use-password switch", flush=True)
-                continue
-            kinp = None
+                break
+            if _visible(page, _SEL_PWD, 300) is not None:
+                break
+            time.sleep(0.4)
+
+        # step 4: password
+        pwd = _visible(page, _SEL_PWD, 15000)
+        if pwd is None:
+            screen = ""
             try:
-                lbl = page.get_by_role("textbox", name="ユーザー名", exact=True).first
-                if lbl.is_visible():
-                    kinp = lbl
+                screen = page.locator("div[role='dialog']").first.inner_text(timeout=1500)
             except Exception:  # noqa: BLE001
-                kinp = None
-            if kinp is None:
-                kinp = _first_visible(page, list(_IDENT_SELECTORS), 500)
-            if kinp is not None and username:
-                cur = kinp.input_value()
-                if cur != username:
-                    kinp.click()
-                    kinp.press_sequentially(username, delay=60)
-                if not _click_text_button(page, ("続ける", "Next"), 1500):
-                    page.keyboard.press("Enter")
-                continue
+                pass
+            raise LoginError(f"password input not reached; screen={screen[:120]!r}")
+        pwd.fill(password)
+        _submit_and_wait(page, _SEL_PWD)
 
-        if not logged_in:
-            raise LoginError("login did not complete within the time budget")
-
-        time.sleep(2)
-        cookies_list = context.cookies("https://x.com")
+        # step 5: wait for login completion (cookies are the source of truth)
+        deadline = time.time() + 30
         picked: dict[str, str] = {}
         user_id: Optional[str] = None
-        for c in cookies_list:
-            if c["name"] in ("auth_token", "ct0"):
-                picked[c["name"]] = c["value"]
-            if c["name"] == "twid" and c.get("value", "").startswith("u%3D"):
-                user_id = urllib.parse.unquote(c["value"])[2:]
+        while time.time() < deadline:
+            time.sleep(1)
+            cookies_list = context.cookies("https://x.com")
+            picked = {}
+            for c in cookies_list:
+                if c["name"] in ("auth_token", "ct0"):
+                    picked[c["name"]] = c["value"]
+                if c["name"] == "twid" and c.get("value", "").startswith("u%3D"):
+                    user_id = urllib.parse.unquote(c["value"])[2:]
+            if picked.get("auth_token") and picked.get("ct0"):
+                break
         if not picked.get("auth_token"):
-            raise LoginError("login finished but auth_token cookie was not found")
-        return LoginResult(cookies=picked, user_id=user_id,
-                           screen_name=username or None)
+            screen = ""
+            try:
+                screen = page.locator("div[role='dialog']").last.inner_text(timeout=1500)
+            except Exception:  # noqa: BLE001
+                pass
+            raise LoginError(
+                f"login did not complete (final url={page.url[:80]!r} screen={screen[:150]!r})")
+        return LoginResult(cookies=picked, user_id=user_id, screen_name=username or None)
     finally:
         try:
             browser.close()
