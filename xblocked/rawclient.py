@@ -20,10 +20,22 @@ class RawClient:
         self.cookies = cookies
         self.placeholder = placeholder
         self.timeout = timeout
-        from twitter_openapi_python import TwitterOpenapiPython
-
-        headers, _ = TwitterOpenapiPython().get_header()
-        self.headers = headers
+        # Standard web client headers. (The twitter_openapi_python get_header()
+        # fetch is unreliable; these match the live x.com web client.)
+        self.headers: dict[str, str] = {
+            "authorization": f"Bearer {ACCESS_TOKEN}",
+            "user-agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+            ),
+            "accept": "*/*",
+            "accept-encoding": "identity",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "referer": "https://x.com/",
+            "priority": "u=1, i",
+            "x-twitter-client-language": "ja",
+            "x-twitter-active-user": "yes",
+        }
         self.headers["cookie"] = cookie_str(cookies)
         if cookies.get("ct0"):
             self.headers["x-csrf-token"] = cookies["ct0"]
