@@ -76,7 +76,15 @@ def main() -> int:
         print("[login] warning: password logins can trigger X risk control. "
               "prefer a secondary account for testing.")
         result = None
-        if node_engine_available():
+        try:
+            from xblocked.auth_login_browser import run_login_browser
+            print("[login] engine: cloakbrowser (proven path)")
+            result = run_login_browser(cfg)
+        except LoginError as exc:
+            print(f"[login] cloakbrowser engine failed: {exc}")
+        except ImportError:
+            print("[login] cloakbrowser not installed, trying other engines")
+        if result is None and node_engine_available():
             print("[login] engine: node (the-convocation/twitter-scraper)")
             try:
                 result = run_login_node(cfg)
