@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import subprocess
 import tempfile
 import time
@@ -29,9 +30,9 @@ _SEL_PWD = "password"
 
 
 def _headless() -> bool:
-    # Headed Chrome ignores --remote-debugging-address (binds 127.0.0.1 only),
-    # and loopback is unreliable on some setups; default to headless where
-    # 0.0.0.0 binding works and the LAN IP is reachable.
+    # Headed (default) is stealthier and renders identically to a real
+    # browser; the CDP port is self-calibrated so loopback filtering on
+    # some ports is avoided. XB_LOGIN_HEADLESS=1 forces headless.
     return os.environ.get("XB_LOGIN_HEADLESS", "1") == "1"
 
 
@@ -107,6 +108,43 @@ def _submit_form(cdp: _CDP, input_name: str, texts: tuple[str, ...],
             except Exception:  # noqa: BLE001
                 pass
         time.sleep(0.3)
+    return False
+
+
+def _real_click_dialog(cdp: _CDP, texts: tuple[str, ...],
+                       timeout_s: float = 4.0) -> bool:
+    """Real-mouse-click a button (by text) inside the ACTIVE dialog."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        for t in texts:
+            try:
+                pos = cdp.js(
+                    '((txt) => { const ds = [...document.querySelectorAll'
+                    '("div[role=dialog]")];'
+                    ' for (let i = ds.length - 1; i >= 0; i--) {'
+                    ' const btns = [...ds[i].querySelectorAll("button, [role=button]")]'
+                    '.filter(b => b.textContent.trim() === txt &&'
+                    ' b.offsetParent !== null && !b.disabled);'
+                    ' const b = btns[btns.length - 1]; if (!b) continue;'
+                    ' const r = b.getBoundingClientRect();'
+                    ' if (r.width > 30 && r.height > 10)'
+                    ' return {x: r.x + r.width / 2, y: r.y + r.height / 2}; }'
+                    ' return null; })(' + json.dumps(t) + ')', 6)
+                if pos:
+                    cdp.cmd("Input.dispatchMouseEvent",
+                            {"type": "mouseMoved", "x": pos["x"], "y": pos["y"]}, 8)
+                    cdp.cmd("Input.dispatchMouseEvent",
+                            {"type": "mousePressed", "x": pos["x"], "y": pos["y"],
+                             "button": "left", "clickCount": 1}, 8)
+                    cdp.cmd("Input.dispatchMouseEvent",
+                            {"type": "mouseReleased", "x": pos["x"], "y": pos["y"],
+                             "button": "left", "clickCount": 1}, 8)
+                    print(f"[login-browser] real-clicked {t!r} at "
+                          f"({pos['x']:.0f},{pos['y']:.0f})", flush=True)
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        time.sleep(0.4)
     return False
 
 
@@ -196,39 +234,75 @@ def _click_text(cdp: _CDP, texts: tuple[str, ...], timeout_s: float = 3.0) -> bo
     return False
 
 
-def _submit_and_wait(cdp: _CDP, name: str, wait_s: float = 6.0) -> bool:
-    if not _click_text(cdp, ("続ける", "ログイン", "Next", "Log in"), 1500):
-        expr = ("(() => { const els = document.querySelectorAll"
-                "(\"input[name='" + name + "']\"); const e = els[els.length - 1];"
-                " if (!e) return; e.dispatchEvent(new KeyboardEvent("
-                "'keydown', {key: 'Enter', bubbles: true}));"
-                " e.form && e.form.requestSubmit && e.form.requestSubmit(); })()")
-        try:
-            cdp.js(expr, 8)
-        except Exception:  # noqa: BLE001
-            pass
-    deadline = time.time() + wait_s
+def _real_click_submit(cdp: _CDP, name: str, texts: tuple[str, ...],
+                       timeout_s: float = 6.0) -> bool:
+    """Wait for the form submit control to be enabled, then click it with
+    real mouse events (React sometimes ignores synthetic .click())."""
+    deadline = time.time() + timeout_s
+    pos = None
     while time.time() < deadline:
-        try:
-            gone = cdp.js(
-                "(() => { const els = document.querySelectorAll"
-                "(\"input[name='" + name + "']\"); const e = els[els.length - 1];"
-                " if (!e) return true; const r = e.getBoundingClientRect();"
-                " return !(r.width > 0 && r.height > 0); })()", 8)
-            if gone:
-                return True
-        except Exception:  # noqa: BLE001
-            return True
+        for t in texts:
+            try:
+                pos = cdp.js(
+                    '((name, txt) => { const els = document.querySelectorAll'
+                    '("input[name='" + name + "']"); const e = els[els.length - 1];'
+                    ' if (!e) return null; const form = e.closest("form");'
+                    ' if (!form) return null;'
+                    ' const btns = [...form.querySelectorAll("button, [role=button]")]'
+                    '.filter(b => b.textContent.trim() === txt &&'
+                    ' !b.disabled && b.offsetParent !== null);'
+                    ' const b = btns[btns.length - 1]; if (!b) return null;'
+                    ' const r = b.getBoundingClientRect();'
+                    ' if (r.width < 10) return null;'
+                    ' return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })'
+                    '(' + json.dumps(name) + ', ' + json.dumps(t) + ')', 6)
+                if pos:
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+        if pos:
+            break
         time.sleep(0.3)
-    return False
+    if not pos:
+        return False
+    try:
+        cdp.cmd("Input.dispatchMouseEvent",
+                {"type": "mouseMoved", "x": pos["x"], "y": pos["y"]}, 8)
+        cdp.cmd("Input.dispatchMouseEvent",
+                {"type": "mousePressed", "x": pos["x"], "y": pos["y"],
+                 "button": "left", "clickCount": 1}, 8)
+        cdp.cmd("Input.dispatchMouseEvent",
+                {"type": "mouseReleased", "x": pos["x"], "y": pos["y"],
+                 "button": "left", "clickCount": 1}, 8)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
-def _fill_and_submit(cdp: _CDP, name: str, value: str, tries: int = 3) -> bool:
+def _input_gone(cdp: _CDP, name: str) -> bool:
+    try:
+        return bool(cdp.js(
+            '(() => { const els = document.querySelectorAll'
+            '("input[name='' + name + '']"); const e = els[els.length - 1];'
+            ' if (!e) return true; const r = e.getBoundingClientRect();'
+            ' return !(r.width > 0 && r.height > 0); })()', 8))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _fill_submit_real(cdp: _CDP, name: str, value: str,
+                      texts: tuple[str, ...], tries: int = 4) -> bool:
+    """Set a React input value and submit via real mouse click, retrying
+    until the input leaves the active screen."""
     for _ in range(tries):
         if not _set_value(cdp, name, value):
             continue
-        if _submit_and_wait(cdp, name):
-            return True
+        _real_click_submit(cdp, name, texts)
+        deadline = time.time() + 6.0
+        while time.time() < deadline:
+            if _input_gone(cdp, name):
+                return True
+            time.sleep(0.3)
     return False
 
 
@@ -251,31 +325,65 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
     if headless is None:
         headless = _headless()
 
+    last_err: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            return _run_login_once(cfg, email, username, password, headless)
+        except (LoginError, Exception) as exc:  # noqa: BLE001
+            last_err = exc
+            print(f"[login-browser] attempt {attempt + 1} failed: "
+                  f"{str(exc)[:100]}", flush=True)
+    raise last_err if last_err else LoginError("login failed")
+
+
+def _run_login_once(cfg, email: str, username: str, password: str,
+                    headless: bool) -> LoginResult:
     from cloakbrowser import build_args, ensure_binary
 
     exe = ensure_binary()
     args = build_args(stealth_args=True, extra_args=None, locale="ja-JP",
                        headless=headless)
     user_dir = tempfile.mkdtemp(prefix="xb_login_")
-    # 127.0.0.1 loopback can be blocked machine-wide (VPN kill-switch
-    # filters), so expose CDP on all interfaces and use the LAN IP.
-    import socket as _socket
-    import random
-    _probe = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-    try:
-        _probe.connect(("8.8.8.8", 80))
-        local_ip = _probe.getsockname()[0]
-    except Exception:  # noqa: BLE001
-        local_ip = "127.0.0.1"
-    finally:
-        _probe.close()
-    port = random.randint(9400, 9499)
+
+    # Some machines silently drop TCP connects on certain loopback ports
+    # (security/VPN WFP filters). Self-calibrate: find a port where a real
+    # connect() succeeds, so CDP is reachable regardless.
+    def _pick_port() -> Optional[int]:
+        candidates = (list(range(9220, 9240)) + list(range(8220, 8240))
+                      + list(range(1024, 1064)) + list(range(2920, 2940)))
+        for cand in candidates:
+            try:
+                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                srv.bind(("127.0.0.1", cand))
+                srv.listen(1)
+                c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                c.settimeout(1.2)
+                try:
+                    c.connect(("127.0.0.1", cand))
+                    c.close()
+                    srv.close()
+                    return cand
+                except Exception:  # noqa: BLE001
+                    c.close()
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                try:
+                    srv.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return None
+
+    port = _pick_port()
+    if port is None:
+        raise LoginError("no reachable loopback port found for CDP")
+    local_ip = "127.0.0.1"
     launch_args = [
         exe, *args,
         f"--user-data-dir={user_dir}",
         f"--remote-debugging-port={port}",
-        "--remote-debugging-address=0.0.0.0",
         "--remote-allow-origins=*",
+        "--window-size=1400,900",
         "--no-first-run", "about:blank",
     ]
     proc = subprocess.Popen(launch_args, stdout=subprocess.DEVNULL,
@@ -313,20 +421,20 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
 
         # step 1: identifier (screen detection via URL hash - the JF SPA
         # keeps old screens in the DOM, so input presence is meaningless)
-        if not _set_value(cdp, _SEL_EMAIL, email or username):
-            raise LoginError(f"could not type identifier; screen={_screen_text(cdp)[:120]!r}")
-        _submit_form(cdp, _SEL_EMAIL, ("続ける", "Next"))
-        if not _wait_hash(cdp, ("knowledge_check", "login_enter_password", "verify_code"), 20):
-            raise LoginError(f"identifier submit did not advance; screen={_screen_text(cdp)[:120]!r}")
+        if not _fill_submit_real(cdp, _SEL_EMAIL, email or username,
+                                 ("続ける", "Next")):
+            raise LoginError(f"identifier step failed; screen={_screen_text(cdp)[:120]!r}")
 
-        # step 2: knowledge check (optional)
+        # step 2: knowledge check (optional) — try the "Use password" switch
+        # first: it jumps straight to the password screen, skipping both the
+        # username quiz and the email verification code.
         if "knowledge_check" in _hash(cdp):
+            _real_click_dialog(cdp, ("パスワードを使用", "Use password"))
+            time.sleep(1.5)
+        if "login_enter_password" not in _hash(cdp) and "knowledge_check" in _hash(cdp):
             if not username:
                 raise LoginError("knowledge check requires the account username")
-            if not _set_value(cdp, _SEL_KC, username):
-                raise LoginError("could not type knowledge check answer")
-            _submit_form(cdp, _SEL_KC, ("続ける", "Next"))
-            if not _wait_hash(cdp, ("login_enter_password", "verify_code"), 20):
+            if not _fill_submit_real(cdp, _SEL_KC, username, ("続ける", "Next")):
                 screen = _screen_text(cdp)
                 if "正しくありません" in screen:
                     raise LoginError("knowledge check rejected the username")
@@ -335,17 +443,32 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
         # step 3: verify_code screen -> switch to password
         deadline = time.time() + 15
         while "verify_code" in _hash(cdp) and time.time() < deadline:
-            if _click_text(cdp, ("パスワードを使用", "Use password"), 1500):
-                time.sleep(1)
+            _real_click_dialog(cdp, ("パスワードを使用", "Use password"))
+            time.sleep(1.5)
 
-        # step 4: password
+        # step 4: password (native form submit - avoids mis-aimed clicks
+        # near the forgot-password link, which would reset the whole flow)
         if "login_enter_password" not in _hash(cdp):
             _wait_hash(cdp, ("login_enter_password",), 10)
         if "login_enter_password" not in _hash(cdp):
             raise LoginError(f"password screen not reached; screen={_screen_text(cdp)[:120]!r}")
         if not _set_value(cdp, _SEL_PWD, password):
             raise LoginError("could not type password")
-        _submit_form(cdp, _SEL_PWD, ("続ける", "ログイン", "Next", "Log in"))
+        # submit exactly like a real user: focus the input, press Enter
+        # via CDP key events (requestSubmit/mis-aimed clicks reset the flow)
+        try:
+            cdp.js(
+                "(() => { const els = document.querySelectorAll"
+                "(\"input[name='" + _SEL_PWD + "']\"); const e = els[els.length - 1];"
+                " if (e) { e.focus(); return 'focused'; } return 'no-input'; })()", 8)
+            cdp.cmd("Input.dispatchKeyEvent",
+                    {"type": "keyDown", "key": "Enter", "code": "Enter",
+                     "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}, 8)
+            cdp.cmd("Input.dispatchKeyEvent",
+                    {"type": "keyUp", "key": "Enter", "code": "Enter",
+                     "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}, 8)
+        except Exception:  # noqa: BLE001
+            pass
 
         # step 5: completion = cookies present (source of truth)
         cdp.cmd("Network.enable")
@@ -367,9 +490,19 @@ def run_login_browser(cfg, headless: Optional[bool] = None) -> LoginResult:
             if picked.get("auth_token") and picked.get("ct0"):
                 break
         if not picked.get("auth_token"):
+            try:
+                all_c = cdp.cmd("Network.getAllCookies", {}, 15).get("cookies", [])
+                names = sorted({c["name"] for c in all_c})
+            except Exception as exc:  # noqa: BLE001
+                names = f"cookie dump failed: {str(exc)[:60]}"
+            try:
+                title = cdp.js("document.title", 8)
+                cur = cdp.js("location.href", 8)
+            except Exception:  # noqa: BLE001
+                title, cur = "?", "?"
             raise LoginError(
-                f"login did not complete (url={str(cdp.js('location.href', 8))[:80]!r} "
-                f"screen={_screen_text(cdp)[:150]!r})")
+                f"login did not complete (url={str(cur)[:80]!r} "
+                f"title={str(title)[:40]!r} cookies={names})")
         return LoginResult(cookies=picked, user_id=user_id, screen_name=username or None)
     finally:
         if cdp is not None:

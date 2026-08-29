@@ -82,21 +82,21 @@ def main() -> int:
             result = run_login_browser(cfg)
         except LoginError as exc:
             print(f"[login] cloakbrowser engine failed: {exc}")
-        except ImportError:
-            print("[login] cloakbrowser not installed, trying other engines")
+        except Exception as exc:
+            print(f"[login] cloakbrowser engine crashed: {str(exc)[:120]}")
         if result is None and node_engine_available():
             print("[login] engine: node (the-convocation/twitter-scraper)")
             try:
                 result = run_login_node(cfg)
-            except LoginError as exc:
-                print(f"[login] node engine failed: {exc}")
+            except Exception as exc:
+                print(f"[login] node engine failed: {str(exc)[:120]}")
                 print("[login] falling back to twikit engine...")
         if result is None:
             print("[login] engine: twikit (request-based)")
             try:
                 result = run_login(cfg)
-            except LoginError as exc:
-                print(f"[login] failed: {exc}")
+            except Exception as exc:
+                print(f"[login] failed: {str(exc)[:150]}")
                 print("[login] manual fallback: log in at x.com in your normal browser, "
                       "then copy auth_token / ct0 into config.json.")
                 return 1
